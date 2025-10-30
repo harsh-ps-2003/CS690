@@ -1,0 +1,37 @@
+Metadata-Version: 2.4
+Name: CS690
+Version: 1.0.0
+Summary: CS690 Project
+Requires-Python: <3.12,>=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: torch==2.1.2
+Requires-Dist: torchvision==0.16.2
+Requires-Dist: transformers==4.38.2
+Requires-Dist: diffusers==0.27.2
+Requires-Dist: tokenizers==0.15.2
+Requires-Dist: huggingface-hub==0.25.2
+Requires-Dist: accelerate>=1.0.0
+Requires-Dist: datasets>=2.14.0
+Requires-Dist: einops>=0.7.0
+Requires-Dist: safetensors>=0.4.2
+Requires-Dist: pandas>=2.1.0
+Requires-Dist: numpy<2.0
+Requires-Dist: pillow>=10.3.0
+Requires-Dist: scikit-image>=0.22.0
+Requires-Dist: clean-fid>=0.1.35
+Requires-Dist: pyyaml>=6.0.1
+Requires-Dist: tqdm>=4.66.0
+Requires-Dist: wandb>=0.17.0
+Requires-Dist: pydicom>=2.4.4
+Requires-Dist: nibabel>=5.2.1
+Requires-Dist: scipy>=1.12.0
+Requires-Dist: triton==2.1.0
+Requires-Dist: setuptools>=68
+Provides-Extra: dev
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Provides-Extra: bnb
+Requires-Dist: bitsandbytes==0.41.1; extra == "bnb"
+Dynamic: license-file
+
+# CS690

@@ -1,0 +1,54 @@
+[project]
+name = "CS690"
+version = "1.0.0"
+description = "CS690 Project"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+
+dependencies = [
+  # CUDA 11.8 
+  "torch==2.1.2",
+  "torchvision==0.16.2",
+  "transformers==4.38.2",
+  "diffusers==0.27.2",
+  "tokenizers==0.15.2",
+  "huggingface-hub==0.25.2",
+  "accelerate>=1.0.0",
+  "datasets>=2.14.0",
+  "einops>=0.7.0",
+  "safetensors>=0.4.2",
+  "pandas>=2.1.0",
+  "numpy<2.0",
+  "pillow>=10.3.0",
+  "scikit-image>=0.22.0",
+  "clean-fid>=0.1.35",
+  "pyyaml>=6.0.1",
+  "tqdm>=4.66.0",
+  "wandb>=0.17.0",
+  "pydicom>=2.4.4",
+  "nibabel>=5.2.1",
+  "scipy>=1.12.0",
+  "triton==2.1.0",
+  # runtime build tools required by Triton at import time in some envs
+  "setuptools>=68",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.5.0",
+]
+bnb = [
+  # 8-bit Adam optimizer to reduce optimizer state memory on GPUs
+  # CUDA 11.8-friendly release (avoids cu12 provider deps under uv)
+  "bitsandbytes==0.41.1",
+]
+
+# PyTorch CUDA 11.8 index for correct wheel resolution
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

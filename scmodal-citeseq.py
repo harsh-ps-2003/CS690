@@ -52,7 +52,17 @@ ADT_shared.var_names_make_unique()
 RNA_unshared = adata_RNA[:, sorted(set(adata_RNA.var.index) - set(rna_protein_correspondence[:, 0]))].copy()
 ADT_unshared = adata_ADT[:, sorted(set(adata_ADT.var.index) - set(rna_protein_correspondence[:, 1]))].copy()
 
-sc.pp.highly_variable_genes(RNA_unshared, flavor='cell_ranger', n_top_genes=3000)
+# Clean numerical issues
+RNA_unshared.X = np.nan_to_num(RNA_unshared.X, nan=0.0, posinf=0.0, neginf=0.0)
+RNA_unshared.X = np.clip(RNA_unshared.X, a_min=1e-10, a_max=np.percentile(RNA_unshared.X, 99.9))
+
+# Try seurat_v3 (if available), else fallback automatically
+try:
+    sc.pp.highly_variable_genes(RNA_unshared, flavor='seurat_v3', n_top_genes=3000)
+except Exception as e:
+    print(f"⚠️ seurat_v3 failed ({e}), using cell_ranger fallback.")
+    sc.pp.highly_variable_genes(RNA_unshared, flavor='cell_ranger', n_top_genes=3000, duplicates='drop')
+
 RNA_unshared = RNA_unshared[:, RNA_unshared.var.highly_variable].copy()
 
 RNA_unshared.var['feature_name'] = RNA_unshared.var.index.values

@@ -27,7 +27,7 @@ dependencies = [
   "numba>=0.56.0",
   "matplotlib>=3.7,<3.11",
   "scikit-learn>=1.3.0",
-  "python-annoy>=1.17.1",
+  "annoy>=1.17.1",
   # imaging and other dependencies
   "pillow>=10.3.0",
   "scikit-image>=0.22.0",

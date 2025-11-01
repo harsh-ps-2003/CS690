@@ -1,11 +1,11 @@
+import os
 import numpy as np
 import pandas as pd
 import scanpy as sc
 import anndata as ad
-import os
-
-from scMODAL import scmodal
-
+import scMODAL.scmodal as scmodal
+print(scmodal.__version__)
+print(dir(scmodal.model))
 import warnings
 warnings.filterwarnings("ignore")
 

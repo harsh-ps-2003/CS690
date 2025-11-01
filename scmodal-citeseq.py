@@ -104,7 +104,7 @@ sc.pp.scale(adata2, max_value=10)
 model = scmodal.model.Model(model_path="./CITE-seq_PBMC")
 
 model.preprocess(adata1, adata2, shared_gene_num=RNA_shared.shape[1])
-model.train()
+model.train(batch_size=128)
 model.eval()
 
 adata_integrated = ad.AnnData(X=model.latent)

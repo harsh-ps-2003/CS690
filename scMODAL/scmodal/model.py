@@ -8,8 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from scmodal.networks import *
-from scmodal.utils import *
+from .networks import *
+from .utils import *
 
 class Model(object):
     def __init__(self, batch_size=500, training_steps=10000, seed=1234, n_latent=20,

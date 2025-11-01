@@ -5,7 +5,7 @@ import pandas as pd
 import anndata as ad
 import umap
 from annoy import AnnoyIndex
-from scmodal.model import *
+from .model import *
 from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
 

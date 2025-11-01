@@ -7,8 +7,8 @@ requires-python = ">=3.11,<3.12"
 
 dependencies = [
   # CUDA 11.8 
-  "torch==2.1.2",
-  "torchvision==0.16.2",
+  "torch==2.1.2+cu118",
+  "torchvision==0.16.2+cu118",
   "transformers==4.38.2",
   "diffusers==0.27.2",
   "tokenizers==0.15.2",
@@ -37,7 +37,7 @@ dependencies = [
   "wandb>=0.17.0",
   "pydicom>=2.4.4",
   "nibabel>=5.2.1",
-  "triton==2.1.0",
+  # "triton==2.1.0",
   # runtime build tools required by Triton at import time in some envs
   "setuptools>=68",
 ]

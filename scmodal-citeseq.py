@@ -4,16 +4,16 @@ import scanpy as sc
 import anndata as ad
 import os
 
-import scmodal
+from scMODAL import scmodal
 
 import warnings
 warnings.filterwarnings("ignore")
 
-adata_RNA = sc.read_h5ad('./data/citeseq_pbmc/multi.h5ad')
+adata_RNA = sc.read_h5ad('/data1/cs690_env/multi.h5ad')
 adata_RNA.var.index = adata_RNA.var['_index']
 adata_RNA.X = adata_RNA.raw.X.toarray()
 
-counts_ADT = pd.read_csv('./data/citeseq_pbmc/ADT.csv').T
+counts_ADT = pd.read_csv('/data1/cs690_env/ADT.csv').T
 adata_ADT = ad.AnnData(X = counts_ADT.values)
 adata_ADT.obs.index = counts_ADT.index
 adata_ADT.var.index = counts_ADT.columns
@@ -23,7 +23,7 @@ adata_ADT = adata_ADT[adata_RNA.obs.index]
 adata_RNA = adata_RNA[adata_RNA.obs['celltype.l2'].values != 'Doublet']
 adata_ADT = adata_ADT[adata_ADT.obs['celltype.l2'].values != 'Doublet']
 
-correspondence = pd.read_csv('./protein_gene_conversion.csv')
+correspondence = pd.read_csv('data1/cs690_env/protein_gene_conversion.csv')
 correspondence['Protein name'] = correspondence['Protein name'].replace(to_replace={'CD11a-CD18': 'CD11a/CD18', 'CD66a-c-e': 'CD66a/c/e'})
 print(correspondence)
 

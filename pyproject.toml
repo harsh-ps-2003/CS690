@@ -52,6 +52,10 @@ triton = [
   "triton>=2.1.0",
 ]
 
+# Configure setuptools package discovery - exclude unwanted packages
+[tool.setuptools]
+packages = ["scMODAL"]
+
 # Configure uv to use PyPI as primary, PyTorch as extra
 [tool.uv]
 index-url = "https://pypi.org/simple/"

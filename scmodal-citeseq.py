@@ -23,7 +23,7 @@ adata_ADT = adata_ADT[adata_RNA.obs.index]
 adata_RNA = adata_RNA[adata_RNA.obs['celltype.l2'].values != 'Doublet']
 adata_ADT = adata_ADT[adata_ADT.obs['celltype.l2'].values != 'Doublet']
 
-correspondence = pd.read_csv('data1/cs690_env/protein_gene_conversion.csv')
+correspondence = pd.read_csv('/data1/cs690_env/protein_gene_conversion.csv')
 correspondence['Protein name'] = correspondence['Protein name'].replace(to_replace={'CD11a-CD18': 'CD11a/CD18', 'CD66a-c-e': 'CD66a/c/e'})
 print(correspondence)
 

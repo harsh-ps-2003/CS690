@@ -52,7 +52,7 @@ ADT_shared.var_names_make_unique()
 RNA_unshared = adata_RNA[:, sorted(set(adata_RNA.var.index) - set(rna_protein_correspondence[:, 0]))].copy()
 ADT_unshared = adata_ADT[:, sorted(set(adata_ADT.var.index) - set(rna_protein_correspondence[:, 1]))].copy()
 
-sc.pp.highly_variable_genes(RNA_unshared, flavor='seurat_v3', n_top_genes=3000)
+sc.pp.highly_variable_genes(RNA_unshared, flavor='seurat', n_top_genes=3000)
 RNA_unshared = RNA_unshared[:, RNA_unshared.var.highly_variable].copy()
 
 RNA_unshared.var['feature_name'] = RNA_unshared.var.index.values

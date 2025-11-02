@@ -333,13 +333,24 @@ class Model(object):
                 print(f"Peak memory utilization: {stats['max_reserved']/stats['total']*100:.1f}%")
                 print("=" * 70)
 
-        if not os.path.exists(self.model_path):
-            os.makedirs(self.model_path)
-
-        state = {'E_A': self.E_A.state_dict(), 'E_B': self.E_B.state_dict(),
-                 'G_A': self.G_A.state_dict(), 'G_B': self.G_B.state_dict()}
-
-        torch.save(state, os.path.join(self.model_path, "ckpt.pth"))
+            if not os.path.exists(self.model_path):
+                os.makedirs(self.model_path)
+            
+            # Move models to CPU before saving to avoid OOM
+            self.E_A.cpu()
+            self.E_B.cpu()
+            self.G_A.cpu()
+            self.G_B.cpu()
+            torch.cuda.empty_cache()
+            
+            state = {
+                'E_A': self.E_A.state_dict(),
+                'E_B': self.E_B.state_dict(),
+                'G_A': self.G_A.state_dict(),
+                'G_B': self.G_B.state_dict()
+            }
+            
+            torch.save(state, os.path.join(self.model_path, "ckpt.pth"))
 
 
     def eval(self):

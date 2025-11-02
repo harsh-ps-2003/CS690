@@ -11,6 +11,57 @@ import torch.optim as optim
 from .networks import *
 from .utils import *
 
+
+def get_gpu_memory_stats(device=None):
+    """Get current GPU memory statistics"""
+    if not torch.cuda.is_available():
+        return None
+    
+    if device is None:
+        device = torch.cuda.current_device()
+    
+    allocated = torch.cuda.memory_allocated(device) / 1e9  # GB
+    reserved = torch.cuda.memory_reserved(device) / 1e9  # GB
+    max_allocated = torch.cuda.max_memory_allocated(device) / 1e9  # GB (peak)
+    max_reserved = torch.cuda.max_memory_reserved(device) / 1e9  # GB (peak)
+    
+    total_memory = torch.cuda.get_device_properties(device).total_memory / 1e9  # GB
+    free_memory = total_memory - reserved
+    
+    return {
+        'allocated': allocated,
+        'reserved': reserved,
+        'free': free_memory,
+        'total': total_memory,
+        'max_allocated': max_allocated,
+        'max_reserved': max_reserved,
+        'usage_percent': (reserved / total_memory) * 100
+    }
+
+
+def print_gpu_memory(prefix="", device=None, print_peak=False):
+    """Print GPU memory statistics"""
+    stats = get_gpu_memory_stats(device)
+    if stats is None:
+        return
+    
+    msg = f"{prefix}GPU Memory: Allocated={stats['allocated']:.2f}GB, Reserved={stats['reserved']:.2f}GB, "
+    msg += f"Free={stats['free']:.2f}GB/{stats['total']:.2f}GB ({stats['usage_percent']:.1f}%)"
+    
+    if print_peak:
+        msg += f" | Peak: Allocated={stats['max_allocated']:.2f}GB, Reserved={stats['max_reserved']:.2f}GB"
+    
+    print(msg)
+    return stats
+
+
+def reset_peak_memory_stats(device=None):
+    """Reset peak memory statistics"""
+    if torch.cuda.is_available():
+        if device is None:
+            device = torch.cuda.current_device()
+        torch.cuda.reset_peak_memory_stats(device)
+
 class Model(object):
     def __init__(self, batch_size=500, training_steps=10000, seed=1234, n_latent=20,
                  lambdaAE = 10.0, lambdaLA = 10.0, lambdaMNN = 1.0, lambdaGeo = 10.0, lambdaGAN = 1.0, n_KNN = 30,
@@ -83,11 +134,30 @@ class Model(object):
     def train(self):
         begin_time = time.time()
         print("Begining time: ", time.asctime(time.localtime(begin_time)))
+        
+        # GPU memory monitoring - initial state
+        device = None
+        if torch.cuda.is_available():
+            device = self.device if isinstance(self.device, int) else torch.cuda.current_device()
+            torch.cuda.reset_peak_memory_stats(device)
+            print_gpu_memory("Initial ", device=device)
+            
+            # Get GPU info
+            props = torch.cuda.get_device_properties(device)
+            print(f"GPU: {props.name} | Total Memory: {props.total_memory / 1e9:.2f} GB")
+            print(f"Batch size: {self.batch_size} | Training steps: {self.training_steps}")
+            print("-" * 70)
+        
         self.E_A = encoder(self.emb_A.shape[1], self.n_latent).to(self.device)
         self.E_B = encoder(self.emb_B.shape[1], self.n_latent).to(self.device)
         self.G_A = generator(self.emb_A.shape[1], self.n_latent).to(self.device)
         self.G_B = generator(self.emb_B.shape[1], self.n_latent).to(self.device)
         self.D_Z = discriminator(self.n_latent).to(self.device)
+        
+        # Memory after model initialization
+        if torch.cuda.is_available() and device is not None:
+            print_gpu_memory("After model init ", device=device)
+        
         params_G = list(self.E_A.parameters()) + list(self.E_B.parameters()) + list(self.G_A.parameters()) + list(self.G_B.parameters())
         optimizer_G = optim.Adam(params_G, lr=0.001, weight_decay=0.001)
         optimizer_D = optim.Adam(list(self.D_Z.parameters()), lr=0.001, weight_decay=0.001)
@@ -101,11 +171,21 @@ class Model(object):
         N_B = self.emb_B.shape[0]
 
         for step in range(self.training_steps):
+            # Monitor memory at start of step (before forward pass)
+            step_start_memory = None
+            if torch.cuda.is_available() and (step == 0 or step % 500 == 0):
+                step_start_memory = get_gpu_memory_stats(device)
+            
             cos = nn.CosineSimilarity(dim=1, eps=1e-6)
             index_A = np.random.choice(np.arange(N_A), size=self.batch_size)
             index_B = np.random.choice(np.arange(N_B), size=self.batch_size)
             x_A = torch.from_numpy(self.emb_A[index_A, :]).float().to(self.device)
             x_B = torch.from_numpy(self.emb_B[index_B, :]).float().to(self.device)
+            
+            # Memory after data transfer
+            if torch.cuda.is_available() and step == 0:
+                print_gpu_memory("After data to GPU ", device=device)
+            
             z_A = self.E_A(x_A)
             z_B = self.E_B(x_B)
             x_AtoB = self.G_B(z_A)
@@ -114,6 +194,8 @@ class Model(object):
             x_Brecon = self.G_B(z_B)
             z_AtoB = self.E_B(x_AtoB)
             z_BtoA = self.E_A(x_BtoA)
+            
+            # Memory-intensive pairwise distance computations
             K_A = torch.mean((x_A.view(self.batch_size, 1, -1) - x_A.view(1, self.batch_size, -1))**2, dim=2)
             K_A = torch.exp(-K_A/2)
             K_B_z = torch.mean((z_B.view(self.batch_size, 1, -1) - z_B.view(1, self.batch_size, -1))**2, dim=2)
@@ -122,6 +204,10 @@ class Model(object):
             K_B = torch.exp(-K_B/2)
             K_A_z = torch.mean((z_A.view(self.batch_size, 1, -1) - z_A.view(1, self.batch_size, -1))**2, dim=2)
             K_A_z = torch.exp(-K_A_z/2)
+            
+            # Memory after pairwise computations (critical point)
+            if torch.cuda.is_available() and step == 0:
+                print_gpu_memory("After pairwise matrices ", device=device)
 
             # discriminator loss:
             for _ in range(5):
@@ -154,18 +240,61 @@ class Model(object):
 
             optimizer_G.zero_grad()
             loss_G = self.lambdaGAN * loss_G_GAN + self.lambdaAE * loss_AE + self.lambdaLA * loss_LA + self.lambdaMNN * loss_MNN + self.lambdaGeo*loss_Geo
+            
+            # Memory before backward pass (peak usage point)
+            pre_backward_memory = None
+            if torch.cuda.is_available():
+                pre_backward_memory = get_gpu_memory_stats(device)
+                # Warn if memory usage is high
+                if pre_backward_memory['usage_percent'] > 90:
+                    print(f"⚠️  WARNING at step {step}: GPU memory usage > 90% ({pre_backward_memory['usage_percent']:.1f}%)")
+            
             loss_G.backward()
             torch.nn.utils.clip_grad_norm_(params_G, 5.0)
             optimizer_G.step()
+            
+            # Memory after optimizer step
+            if torch.cuda.is_available() and step == 0:
+                print_gpu_memory("After backward+optimizer ", device=device)
 
+            # Periodic reporting with memory stats
             if not step % 2000:
                 print("step %d, loss_D=%f, loss_GAN=%f, loss_AE=%f, loss_Geo=%f, loss_LA=%f, loss_MNN=%f"
                  % (step, loss_D, loss_G_GAN, self.lambdaAE*loss_AE, self.lambdaGeo*loss_Geo, self.lambdaLA*loss_LA, self.lambdaMNN*loss_MNN))
+                if torch.cuda.is_available():
+                    print_gpu_memory(f"Step {step} ", device=device, print_peak=True)
+                    print("-" * 70)
+            
+            # More frequent memory checks every 500 steps
+            elif step % 500 == 0 and step > 0:
+                if torch.cuda.is_available():
+                    current_memory = get_gpu_memory_stats(device)
+                    if current_memory:
+                        usage_pct = current_memory['usage_percent']
+                        if usage_pct > 85:
+                            print(f"Step {step}: Memory usage: {usage_pct:.1f}% (Free: {current_memory['free']:.2f}GB)")
+                            if usage_pct > 95:
+                                print(f"⚠️  CRITICAL: Memory usage > 95%! Consider reducing batch_size.")
+                                # Try to clear cache
+                                torch.cuda.empty_cache()
+            
+            # Clear intermediate tensors to free memory
+            if step % 100 == 0 and step > 0:
+                torch.cuda.empty_cache()
 
         end_time = time.time()
         print("Ending time: ", time.asctime(time.localtime(end_time)))
         self.train_time = end_time - begin_time
         print("Training takes %.2f seconds" % self.train_time)
+        
+        # Final memory statistics
+        if torch.cuda.is_available() and device is not None:
+            print("-" * 70)
+            print_gpu_memory("Final ", device=device, print_peak=True)
+            stats = get_gpu_memory_stats(device)
+            if stats:
+                print(f"Peak memory utilization: {stats['max_reserved']/stats['total']*100:.1f}%")
+                print("=" * 70)
 
         if not os.path.exists(self.model_path):
             os.makedirs(self.model_path)

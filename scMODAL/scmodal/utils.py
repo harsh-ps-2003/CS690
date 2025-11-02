@@ -12,6 +12,7 @@ from scipy.spatial.distance import cdist
 
 def acquire_pairs(X, Y, k=30, metric='angular'):
     # This function was modified from iMAP: https://github.com/Svvord/iMAP/blob/master/imap/stage2.py
+    # ⚠️ MEMORY FIX: Explicitly cleanup intermediate arrays
     f = X.shape[1]
     t1 = AnnoyIndex(f, metric)
     t2 = AnnoyIndex(f, metric)
@@ -26,11 +27,28 @@ def acquire_pairs(X, Y, k=30, metric='angular'):
     sorted_mat = np.array([t2.get_nns_by_vector(item, k) for item in X])
     for i in range(len(sorted_mat)):
         mnn_mat[i,sorted_mat[i]] = True
+    
+    # ✅ Delete sorted_mat before creating next array
+    del sorted_mat
+    
     _ = np.bool_(np.zeros((len(X), len(Y))))
     sorted_mat = np.array([t1.get_nns_by_vector(item, k) for item in Y])
     for i in range(len(sorted_mat)):
         _[sorted_mat[i],i] = True
+    
+    # ✅ Cleanup before final operation
+    del sorted_mat
+    
     mnn_mat = np.logical_and(_, mnn_mat).astype(int)
+    
+    # ✅ Delete temporary matrices
+    del _
+    
+    # ✅ Explicitly unload Annoy indices (they hold memory)
+    t1.unload()
+    t2.unload()
+    del t1, t2
+    
     return mnn_mat
      
 def annotate_by_nn(vec_tar, vec_ref, label_ref, k=20, metric='cosine'):

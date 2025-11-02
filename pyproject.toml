@@ -28,6 +28,7 @@ dependencies = [
   "matplotlib>=3.7,<3.11",
   "scikit-learn>=1.3.0",
   "annoy>=1.17.1",
+  "psutil>=5.9.0",  # Memory monitoring
   # imaging and other dependencies
   "pillow>=10.3.0",
   "scikit-image>=0.22.0",

@@ -8,10 +8,34 @@ print(scmodal.__version__)
 print(dir(scmodal.model))
 import warnings
 warnings.filterwarnings("ignore")
+import psutil
+import gc
+
+def print_memory_usage(prefix=""):
+    """Print current CPU memory usage"""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    mem_gb = mem_info.rss / 1e9  # Convert to GB
+    percent = process.memory_percent()
+    print(f"{prefix}CPU Memory: {mem_gb:.2f} GB ({percent:.1f}% of system RAM)")
+    return mem_gb
+
+print_memory_usage("Initial ")
 
 adata_RNA = sc.read_h5ad('/data1/cs690_env/multi.h5ad')
+print_memory_usage("After loading RNA h5ad ")
 adata_RNA.var.index = adata_RNA.var['_index']
-adata_RNA.X = adata_RNA.raw.X.toarray()
+
+# Keep data sparse to avoid massive memory consumption
+# Only convert to dense if already dense, otherwise keep sparse
+if hasattr(adata_RNA.raw.X, 'toarray'):
+    print("⚠️  WARNING: adata_RNA.raw.X is sparse. Converting to dense will consume massive RAM.")
+    print(f"   Matrix shape: {adata_RNA.raw.X.shape}, estimated dense size: {adata_RNA.raw.X.shape[0] * adata_RNA.raw.X.shape[1] * 8 / 1e9:.2f} GB")
+    # Convert to dense (this is the memory killer)
+    adata_RNA.X = adata_RNA.raw.X.toarray()
+    print_memory_usage("After sparse->dense conversion ")
+else:
+    adata_RNA.X = adata_RNA.raw.X
 
 counts_ADT = pd.read_csv('/data1/cs690_env/ADT.csv').T
 adata_ADT = ad.AnnData(X = counts_ADT.values)
@@ -41,6 +65,7 @@ for i in range(correspondence.shape[0]):
             rna_protein_correspondence.append([r, curr_protein_name])
 
 rna_protein_correspondence = np.array(rna_protein_correspondence)
+print_memory_usage("After correspondence ")
 
 RNA_shared = adata_RNA[:, rna_protein_correspondence[:, 0]].copy()
 ADT_shared = adata_ADT[:, rna_protein_correspondence[:, 1]].copy()
@@ -48,9 +73,11 @@ RNA_shared.var['feature_name'] = RNA_shared.var.index.values
 ADT_shared.var['feature_name'] = ADT_shared.var.index.values
 RNA_shared.var_names_make_unique()
 ADT_shared.var_names_make_unique()
+print_memory_usage("After creating shared ")
 
 RNA_unshared = adata_RNA[:, sorted(set(adata_RNA.var.index) - set(rna_protein_correspondence[:, 0]))].copy()
 ADT_unshared = adata_ADT[:, sorted(set(adata_ADT.var.index) - set(rna_protein_correspondence[:, 1]))].copy()
+print_memory_usage("After creating unshared ")
 
 RNA_unshared.X = np.nan_to_num(RNA_unshared.X, nan=0.0, posinf=0.0, neginf=0.0)
 RNA_unshared.X = np.clip(RNA_unshared.X, a_min=1e-10, a_max=np.percentile(RNA_unshared.X, 99.9))
@@ -97,13 +124,23 @@ sc.pp.log1p(ADT_unshared)
 
 adata1 = ad.concat([RNA_shared, RNA_unshared], axis=1)
 adata2 = ad.concat([ADT_shared, ADT_unshared], axis=1)
+print_memory_usage("After concatenation ")
 
 sc.pp.scale(adata1, max_value=10)
 sc.pp.scale(adata2, max_value=10)
+print_memory_usage("After scaling ")
+
+# Store shared_gene_num before cleanup
+shared_gene_num = RNA_shared.shape[1]
+
+# Delete intermediate objects before training
+del RNA_shared, RNA_unshared, ADT_shared, ADT_unshared, counts_ADT
+gc.collect()
+print_memory_usage("After cleanup before training ")
 
 model = scmodal.model.Model(batch_size=200,training_steps=3500, model_path="./CITE-seq_PBMC")
 
-model.preprocess(adata1, adata2, shared_gene_num=RNA_shared.shape[1])
+model.preprocess(adata1, adata2, shared_gene_num=shared_gene_num)
 model.train()
 model.eval()
 

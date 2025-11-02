@@ -1,5 +1,6 @@
 import os
 import time
+import gc
 import numpy as np
 import scanpy as sc
 import pandas as pd
@@ -10,6 +11,38 @@ import torch.optim as optim
 
 from .networks import *
 from .utils import *
+
+# Add CPU memory monitoring
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    print("psutil not available. Install with: pip install psutil")
+
+
+def get_cpu_memory_stats():
+    """Get current CPU memory statistics"""
+    if not PSUTIL_AVAILABLE:
+        return None
+    
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    mem_gb = mem_info.rss / 1e9  # GB
+    percent = process.memory_percent()
+    
+    # Get system memory
+    virtual = psutil.virtual_memory()
+    system_total = virtual.total / 1e9
+    system_available = virtual.available / 1e9
+    
+    return {
+        'process_memory_gb': mem_gb,
+        'process_percent': percent,
+        'system_total_gb': system_total,
+        'system_available_gb': system_available,
+        'system_used_percent': virtual.percent
+    }
 
 
 def get_gpu_memory_stats(device=None):
@@ -37,6 +70,18 @@ def get_gpu_memory_stats(device=None):
         'max_reserved': max_reserved,
         'usage_percent': (reserved / total_memory) * 100
     }
+
+
+def print_cpu_memory(prefix=""):
+    """Print CPU memory statistics"""
+    stats = get_cpu_memory_stats()
+    if stats is None:
+        return
+    
+    msg = f"{prefix}CPU Memory: Process={stats['process_memory_gb']:.2f}GB ({stats['process_percent']:.1f}%), "
+    msg += f"System={stats['system_used_percent']:.1f}% used, Available={stats['system_available_gb']:.1f}GB"
+    print(msg)
+    return stats
 
 
 def print_gpu_memory(prefix="", device=None, print_peak=False):
@@ -135,7 +180,7 @@ class Model(object):
         begin_time = time.time()
         print("Begining time: ", time.asctime(time.localtime(begin_time)))
         
-        # GPU memory monitoring - initial state
+        # Memory monitoring - initial state
         device = None
         if torch.cuda.is_available():
             device = self.device if isinstance(self.device, int) else torch.cuda.current_device()
@@ -147,6 +192,10 @@ class Model(object):
             print(f"GPU: {props.name} | Total Memory: {props.total_memory / 1e9:.2f} GB")
             print(f"Batch size: {self.batch_size} | Training steps: {self.training_steps}")
             print("-" * 70)
+        
+        # Monitor CPU memory (the real killer)
+        print_cpu_memory("Initial ")
+        print("-" * 70)
         
         self.E_A = encoder(self.emb_A.shape[1], self.n_latent).to(self.device)
         self.E_B = encoder(self.emb_B.shape[1], self.n_latent).to(self.device)
@@ -237,8 +286,10 @@ class Model(object):
             loss_Geo = - (torch.clamp(cos(K_A, K_A_z), max=0.975).mean() + torch.clamp(cos(K_B, K_B_z), max=0.975).mean())
 
             # MNN loss
-            Sim = acquire_pairs(self.emb_A[index_A, :self.shared_gene_num], self.emb_B[index_B, :self.shared_gene_num], k=self.n_KNN)
-            Sim = torch.from_numpy(Sim).float().to(self.device)
+            #Acquire_pairs creates numpy arrays on CPU - this accumulates in RAM
+            Sim_np = acquire_pairs(self.emb_A[index_A, :self.shared_gene_num], self.emb_B[index_B, :self.shared_gene_num], k=self.n_KNN)
+            Sim = torch.from_numpy(Sim_np).float().to(self.device)
+            del Sim_np  # Immediately delete numpy array to free CPU memory
             z_dist = torch.mean((z_A.view(self.batch_size, 1, -1) - z_B.view(1, self.batch_size, -1))**2, dim=2)
             loss_MNN = torch.sum(Sim * z_dist) / torch.sum(Sim)
 
@@ -280,7 +331,13 @@ class Model(object):
                 )
                 if torch.cuda.is_available():
                     print_gpu_memory(f"Step {step} ", device=device, print_peak=True)
-                    print("-" * 70)
+                # Monitor CPU memory to catch OOM before it happens
+                cpu_stats = print_cpu_memory(f"Step {step} ")
+                if cpu_stats and cpu_stats['system_available_gb'] < 2.0:
+                    print(f"WARNING: System RAM running low! Available: {cpu_stats['system_available_gb']:.2f}GB")
+                    print("    Forcing aggressive garbage collection...")
+                    gc.collect()
+                print("-" * 70)
             
             # ✅ Immediately free memory after printing
             del loss_G, loss_AE, loss_AE_A, loss_AE_B, loss_LA, loss_LA_AtoB, loss_LA_BtoA
@@ -291,34 +348,60 @@ class Model(object):
             if torch.cuda.is_available() and step == 0:
                 print_gpu_memory("After backward+optimizer ", device=device)
             
-            # ✅ Mid-step monitoring to detect gradual GPU memory leaks
-            if step % 500 == 0 and step > 0 and torch.cuda.is_available():
-                current_memory = get_gpu_memory_stats(device)
-                if current_memory:
-                    usage_pct = current_memory["usage_percent"]
-                    if hasattr(self, "_prev_memory"):
-                        memory_growth = current_memory["reserved"] - self._prev_memory["reserved"]
-                        if memory_growth > 0.1:
+            # ✅ Mid-step monitoring to detect gradual GPU AND CPU memory leaks
+            if step % 500 == 0 and step > 0:
+                if torch.cuda.is_available():
+                    current_memory = get_gpu_memory_stats(device)
+                    if current_memory:
+                        usage_pct = current_memory["usage_percent"]
+                        if hasattr(self, "_prev_gpu_memory"):
+                            memory_growth = current_memory["reserved"] - self._prev_gpu_memory["reserved"]
+                            if memory_growth > 0.1:
+                                print(
+                                    f"Step {step}: ⚠️ GPU memory growth +{memory_growth:.2f}GB since last check"
+                                )
+                        self._prev_gpu_memory = current_memory.copy()
+                        if usage_pct > 90:
                             print(
-                                f"Step {step}: ⚠️ Memory growth +{memory_growth:.2f}GB since last check"
+                                f"⚠️ High GPU usage ({usage_pct:.1f}%), forcing cache cleanup..."
                             )
-                    self._prev_memory = current_memory.copy()
-                    if usage_pct > 90:
+                            torch.cuda.empty_cache()
+                            gc.collect()
+                
+                # ⚠️ CRITICAL: Monitor CPU memory growth (the real issue)
+                current_cpu_memory = get_cpu_memory_stats()
+                if current_cpu_memory:
+                    if hasattr(self, "_prev_cpu_memory"):
+                        cpu_growth = current_cpu_memory["process_memory_gb"] - self._prev_cpu_memory["process_memory_gb"]
+                        if cpu_growth > 0.5:  # If process grew by more than 0.5GB
+                            print(
+                                f"Step {step}: ⚠️ CPU memory growth +{cpu_growth:.2f}GB since last check"
+                            )
+                            print(f"    Process using {current_cpu_memory['process_memory_gb']:.2f}GB, forcing GC...")
+                            gc.collect()
+                    self._prev_cpu_memory = current_cpu_memory.copy()
+                    
+                    # Emergency cleanup if system RAM is low
+                    if current_cpu_memory['system_available_gb'] < 3.0:
                         print(
-                            f"⚠️ High GPU usage ({usage_pct:.1f}%), forcing cache cleanup..."
+                            f"⚠️ CRITICAL: System RAM low ({current_cpu_memory['system_available_gb']:.2f}GB available)!"
                         )
-                        torch.cuda.empty_cache()
-                        import gc
+                        print("    Forcing emergency cleanup...")
                         gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
             
-            # ✅ Extra cleanup every few steps
-            if step % 50 == 0 and step > 0:
-                torch.cuda.empty_cache()
+            # ✅ Extra cleanup every few steps - INCREASE FREQUENCY
+            if step % 25 == 0 and step > 0:
+                # Light cleanup - just CUDA cache
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             if step % 100 == 0 and step > 0:
-                import gc
+                # Aggressive cleanup - both CPU and GPU
                 gc.collect()
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
         end_time = time.time()
         print("Ending time: ", time.asctime(time.localtime(end_time)))
         self.train_time = end_time - begin_time

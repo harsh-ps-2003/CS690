@@ -308,7 +308,6 @@ class Model(object):
                     print(f"⚠️  WARNING at step {step}: GPU memory usage > 90% ({pre_backward_memory['usage_percent']:.1f}%)")
                     # Emergency cleanup
                     torch.cuda.empty_cache()
-                    import gc
                     gc.collect()
             
             loss_G.backward()

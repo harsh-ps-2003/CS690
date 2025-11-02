@@ -264,55 +264,61 @@ class Model(object):
             torch.nn.utils.clip_grad_norm_(params_G, 5.0)
             optimizer_G.step()
             
-            # Explicitly delete intermediate tensors to free memory
-            del loss_G, loss_AE, loss_AE_A, loss_AE_B, loss_LA, loss_LA_AtoB, loss_LA_BtoA
-            del loss_G_GAN, loss_Geo, loss_MNN, Sim, z_dist
-            del x_A, x_B, z_A, z_B, x_AtoB, x_BtoA, x_Arecon, x_Brecon, z_AtoB, z_BtoA
-            
-            # Memory after optimizer step
-            if torch.cuda.is_available() and step == 0:
-                print_gpu_memory("After backward+optimizer ", device=device)
-
-            # Periodic reporting with memory stats
+            # ✅ Log before deleting tensors (so loss variables still exist)
             if not step % 2000:
-                print("step %d, loss_D=%f, loss_GAN=%f, loss_AE=%f, loss_Geo=%f, loss_LA=%f, loss_MNN=%f"
-                 % (step, loss_D, loss_G_GAN, self.lambdaAE*loss_AE, self.lambdaGeo*loss_Geo, self.lambdaLA*loss_LA, self.lambdaMNN*loss_MNN))
+                print(
+                    "step %d, loss_D=%f, loss_GAN=%f, loss_AE=%f, loss_Geo=%f, loss_LA=%f, loss_MNN=%f"
+                    % (
+                        step,
+                        float(loss_D),
+                        float(loss_G_GAN),
+                        float(self.lambdaAE) * float(loss_AE),
+                        float(self.lambdaGeo) * float(loss_Geo),
+                        float(self.lambdaLA) * float(loss_LA),
+                        float(self.lambdaMNN) * float(loss_MNN),
+                    )
+                )
                 if torch.cuda.is_available():
                     print_gpu_memory(f"Step {step} ", device=device, print_peak=True)
                     print("-" * 70)
             
-            # More frequent memory checks every 500 steps
-            elif step % 500 == 0 and step > 0:
-                if torch.cuda.is_available():
-                    current_memory = get_gpu_memory_stats(device)
-                    if current_memory:
-                        usage_pct = current_memory['usage_percent']
-                        # Track memory growth trend
-                        if hasattr(self, '_prev_memory'):
-                            memory_growth = current_memory['reserved'] - self._prev_memory['reserved']
-                            if memory_growth > 0.1:  # More than 100MB growth
-                                print(f"Step {step}: Memory growth detected: +{memory_growth:.2f}GB since last check")
-                        self._prev_memory = current_memory.copy()
-                        
-                        if usage_pct > 85:
-                            print(f"Step {step}: Memory usage: {usage_pct:.1f}% (Free: {current_memory['free']:.2f}GB)")
-                            if usage_pct > 95:
-                                print(f"⚠️  CRITICAL: Memory usage > 95%! Consider reducing batch_size.")
-                                # Aggressive cleanup
-                                torch.cuda.empty_cache()
-                                torch.cuda.synchronize()
+            # ✅ Immediately free memory after printing
+            del loss_G, loss_AE, loss_AE_A, loss_AE_B, loss_LA, loss_LA_AtoB, loss_LA_BtoA
+            del loss_G_GAN, loss_Geo, loss_MNN, Sim, z_dist
+            del x_A, x_B, z_A, z_B, x_AtoB, x_BtoA, x_Arecon, x_Brecon, z_AtoB, z_BtoA
             
-            # Clear cache more aggressively
+            # ✅ Memory check for the first iteration
+            if torch.cuda.is_available() and step == 0:
+                print_gpu_memory("After backward+optimizer ", device=device)
+            
+            # ✅ Mid-step monitoring to detect gradual GPU memory leaks
+            if step % 500 == 0 and step > 0 and torch.cuda.is_available():
+                current_memory = get_gpu_memory_stats(device)
+                if current_memory:
+                    usage_pct = current_memory["usage_percent"]
+                    if hasattr(self, "_prev_memory"):
+                        memory_growth = current_memory["reserved"] - self._prev_memory["reserved"]
+                        if memory_growth > 0.1:
+                            print(
+                                f"Step {step}: ⚠️ Memory growth +{memory_growth:.2f}GB since last check"
+                            )
+                    self._prev_memory = current_memory.copy()
+                    if usage_pct > 90:
+                        print(
+                            f"⚠️ High GPU usage ({usage_pct:.1f}%), forcing cache cleanup..."
+                        )
+                        torch.cuda.empty_cache()
+                        import gc
+                        gc.collect()
+            
+            # ✅ Extra cleanup every few steps
             if step % 50 == 0 and step > 0:
                 torch.cuda.empty_cache()
-            
-            # Force garbage collection every 100 steps
             if step % 100 == 0 and step > 0:
                 import gc
                 gc.collect()
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
-
         end_time = time.time()
         print("Ending time: ", time.asctime(time.localtime(end_time)))
         self.train_time = end_time - begin_time

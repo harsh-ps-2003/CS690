@@ -210,11 +210,15 @@ class Model(object):
                 print_gpu_memory("After pairwise matrices ", device=device)
 
             # discriminator loss:
+            # Use detached tensors to avoid retaining computation graph
+            z_A_detached = z_A.detach()
+            z_B_detached = z_B.detach()
             for _ in range(5):
                 optimizer_D.zero_grad()
-                loss_D = (torch.log(1 + torch.exp(-self.D_Z(z_A))) + torch.log(1 + torch.exp(self.D_Z(z_B)))).mean()
-                loss_D.backward(retain_graph=True)
+                loss_D = (torch.log(1 + torch.exp(-self.D_Z(z_A_detached))) + torch.log(1 + torch.exp(self.D_Z(z_B_detached)))).mean()
+                loss_D.backward()
                 optimizer_D.step()
+            del z_A_detached, z_B_detached
 
             # autoencoder loss:
             loss_AE_A = torch.mean((x_Arecon - x_A)**2)
@@ -241,6 +245,9 @@ class Model(object):
             optimizer_G.zero_grad()
             loss_G = self.lambdaGAN * loss_G_GAN + self.lambdaAE * loss_AE + self.lambdaLA * loss_LA + self.lambdaMNN * loss_MNN + self.lambdaGeo*loss_Geo
             
+            # Delete pairwise matrices immediately after loss computation (before backward)
+            del K_A, K_B, K_A_z, K_B_z
+            
             # Memory before backward pass (peak usage point)
             pre_backward_memory = None
             if torch.cuda.is_available():
@@ -248,10 +255,19 @@ class Model(object):
                 # Warn if memory usage is high
                 if pre_backward_memory['usage_percent'] > 90:
                     print(f"⚠️  WARNING at step {step}: GPU memory usage > 90% ({pre_backward_memory['usage_percent']:.1f}%)")
+                    # Emergency cleanup
+                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
             
             loss_G.backward()
             torch.nn.utils.clip_grad_norm_(params_G, 5.0)
             optimizer_G.step()
+            
+            # Explicitly delete intermediate tensors to free memory
+            del loss_G, loss_AE, loss_AE_A, loss_AE_B, loss_LA, loss_LA_AtoB, loss_LA_BtoA
+            del loss_G_GAN, loss_Geo, loss_MNN, Sim, z_dist
+            del x_A, x_B, z_A, z_B, x_AtoB, x_BtoA, x_Arecon, x_Brecon, z_AtoB, z_BtoA
             
             # Memory after optimizer step
             if torch.cuda.is_available() and step == 0:
@@ -271,16 +287,31 @@ class Model(object):
                     current_memory = get_gpu_memory_stats(device)
                     if current_memory:
                         usage_pct = current_memory['usage_percent']
+                        # Track memory growth trend
+                        if hasattr(self, '_prev_memory'):
+                            memory_growth = current_memory['reserved'] - self._prev_memory['reserved']
+                            if memory_growth > 0.1:  # More than 100MB growth
+                                print(f"Step {step}: Memory growth detected: +{memory_growth:.2f}GB since last check")
+                        self._prev_memory = current_memory.copy()
+                        
                         if usage_pct > 85:
                             print(f"Step {step}: Memory usage: {usage_pct:.1f}% (Free: {current_memory['free']:.2f}GB)")
                             if usage_pct > 95:
                                 print(f"⚠️  CRITICAL: Memory usage > 95%! Consider reducing batch_size.")
-                                # Try to clear cache
+                                # Aggressive cleanup
                                 torch.cuda.empty_cache()
+                                torch.cuda.synchronize()
             
-            # Clear intermediate tensors to free memory
-            if step % 100 == 0 and step > 0:
+            # Clear cache more aggressively
+            if step % 50 == 0 and step > 0:
                 torch.cuda.empty_cache()
+            
+            # Force garbage collection every 100 steps
+            if step % 100 == 0 and step > 0:
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
         end_time = time.time()
         print("Ending time: ", time.asctime(time.localtime(end_time)))

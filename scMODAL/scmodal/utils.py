@@ -8,7 +8,7 @@ from annoy import AnnoyIndex
 from .model import *
 from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
-
+import gc
 
 def acquire_pairs(X, Y, k=30, metric='angular'):
     # This function was modified from iMAP: https://github.com/Svvord/iMAP/blob/master/imap/stage2.py

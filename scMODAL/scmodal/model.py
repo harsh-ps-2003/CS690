@@ -656,103 +656,132 @@ class Model(object):
             print_cpu_memory("Before training loop ")
             print("-" * 70)
 
-        for step in range(self.training_steps):
-            # ✅ GPU memory monitoring at step 0 to catch OOM early
-            if step == 0 and torch.cuda.is_available() and device is not None:
-                print_gpu_memory("Step 0 (before forward) ", device=device)
-            
-            cos = nn.CosineSimilarity(dim=1, eps=1e-6)
-            x_dict = {}
-            z_dict = {}
-            K_dict = {}
-            K_z_dict = {}
-            assert len(paired_input_MNN) == (num_datasets - 1)
-            x_MNN_dict_0 = {}
-            x_MNN_dict_1 = {}
-            for i in range(num_datasets):
-                index_i = np.random.choice(np.arange(input_feats[i].shape[0]), size=self.batch_size)
+        try:
+            for step in range(self.training_steps):
+                # ✅ VERBOSE: Monitor every 10 steps to catch where kill happens
+                if step % 10 == 0 and step < 100:
+                    print(f"→ Starting step {step}...")
                 
-                # ✅ Handle sparse matrices properly
-                batch_data = input_feats[i][index_i, :]
-                if sparse.issparse(batch_data):
-                    batch_data = batch_data.toarray()
-                x_dict[i] = torch.from_numpy(batch_data).float().to(self.device)
+                # ✅ GPU memory monitoring at step 0 to catch OOM early
+                if step == 0 and torch.cuda.is_available() and device is not None:
+                    print_gpu_memory("Step 0 (before forward) ", device=device)
                 
-                if i < (num_datasets-1):
-                    x_MNN_dict_0[i] = paired_input_MNN[i][0][index_i, :]
-                if i > 0:
-                    x_MNN_dict_1[i-1] = paired_input_MNN[i-1][1][index_i, :]
-                z_dict[i] = self.E_dict[i](x_dict[i])
-                K_dict[i] = torch.exp(-torch.mean((x_dict[i].view(self.batch_size, 1, -1) - x_dict[i].view(1, self.batch_size, -1))**2, dim=2)/2)
-                K_z_dict[i] = torch.exp(-torch.mean((z_dict[i].view(self.batch_size, 1, -1) - z_dict[i].view(1, self.batch_size, -1))**2, dim=2)/2)
+                cos = nn.CosineSimilarity(dim=1, eps=1e-6)
+                x_dict = {}
+                z_dict = {}
+                K_dict = {}
+                K_z_dict = {}
+                assert len(paired_input_MNN) == (num_datasets - 1)
+                x_MNN_dict_0 = {}
+                x_MNN_dict_1 = {}
+                for i in range(num_datasets):
+                    index_i = np.random.choice(np.arange(input_feats[i].shape[0]), size=self.batch_size)
+                    
+                    # ✅ Handle sparse matrices properly
+                    batch_data = input_feats[i][index_i, :]
+                    if sparse.issparse(batch_data):
+                        batch_data = batch_data.toarray()
+                    x_dict[i] = torch.from_numpy(batch_data).float().to(self.device)
+                    
+                    if i < (num_datasets-1):
+                        x_MNN_dict_0[i] = paired_input_MNN[i][0][index_i, :]
+                    if i > 0:
+                        x_MNN_dict_1[i-1] = paired_input_MNN[i-1][1][index_i, :]
+                    z_dict[i] = self.E_dict[i](x_dict[i])
+                    K_dict[i] = torch.exp(-torch.mean((x_dict[i].view(self.batch_size, 1, -1) - x_dict[i].view(1, self.batch_size, -1))**2, dim=2)/2)
+                    K_z_dict[i] = torch.exp(-torch.mean((z_dict[i].view(self.batch_size, 1, -1) - z_dict[i].view(1, self.batch_size, -1))**2, dim=2)/2)
 
-            # discriminator loss:
-            for _ in range(5):
-                optimizer_D.zero_grad()
-                loss_D = 0
+                # discriminator loss:
+                for _ in range(5):
+                    optimizer_D.zero_grad()
+                    loss_D = 0
+                    for i in range(num_datasets-1):
+                        loss_D += (torch.log(1 + torch.exp(-self.D_dict[i](z_dict[i]))) + torch.log(1 + torch.exp(self.D_dict[i](z_dict[i+1])))).mean()
+                    loss_D.backward(retain_graph=True)
+                    optimizer_D.step()
+
+                # autoencoder loss:
+                loss_AE = 0
+                for i in range(num_datasets):
+                    loss_AE += torch.mean((self.G_dict[i](z_dict[i]) - x_dict[i])**2)
+
+                # latent align loss:
+                loss_LA = 0
                 for i in range(num_datasets-1):
-                    loss_D += (torch.log(1 + torch.exp(-self.D_dict[i](z_dict[i]))) + torch.log(1 + torch.exp(self.D_dict[i](z_dict[i+1])))).mean()
-                loss_D.backward(retain_graph=True)
-                optimizer_D.step()
+                    loss_LA += torch.mean((z_dict[i] - self.E_dict[i+1](self.G_dict[i+1](z_dict[i])))**2)
+                    loss_LA += torch.mean((z_dict[i+1] - self.E_dict[i](self.G_dict[i](z_dict[i+1])))**2)
 
-            # autoencoder loss:
-            loss_AE = 0
-            for i in range(num_datasets):
-                loss_AE += torch.mean((self.G_dict[i](z_dict[i]) - x_dict[i])**2)
+                # generator loss
+                loss_G_GAN = 0
+                for i in range(num_datasets-1):
+                    loss_G_GAN += -(torch.log(1 + torch.exp(-self.D_dict[i](z_dict[i]))) + torch.log(1 + torch.exp(self.D_dict[i](z_dict[i+1])))).mean()
 
-            # latent align loss:
-            loss_LA = 0
-            for i in range(num_datasets-1):
-                loss_LA += torch.mean((z_dict[i] - self.E_dict[i+1](self.G_dict[i+1](z_dict[i])))**2)
-                loss_LA += torch.mean((z_dict[i+1] - self.E_dict[i](self.G_dict[i](z_dict[i+1])))**2)
+                # geometric structure loss
+                loss_Geo = 0
+                for i in range(num_datasets):
+                    loss_Geo += - torch.clamp(cos(K_dict[i], K_z_dict[i]), max=0.975).mean()
 
-            # generator loss
-            loss_G_GAN = 0
-            for i in range(num_datasets-1):
-                loss_G_GAN += -(torch.log(1 + torch.exp(-self.D_dict[i](z_dict[i]))) + torch.log(1 + torch.exp(self.D_dict[i](z_dict[i+1])))).mean()
+                # MNN loss
+                loss_MNN = 0
+                Sim_tensors = []  # Store for cleanup after backward
+                for i in range(num_datasets-1):
+                    # ✅ acquire_pairs creates numpy array on CPU - convert to torch immediately
+                    Sim_np = acquire_pairs(x_MNN_dict_0[i], x_MNN_dict_1[i], k=self.n_KNN)
+                    Sim = torch.from_numpy(Sim_np).float().to(self.device)
+                    del Sim_np  # Immediately delete numpy array to free CPU memory
+                    z_dist = torch.mean((z_dict[i].view(self.batch_size, 1, -1) - z_dict[i+1].view(1, self.batch_size, -1))**2, dim=2)
+                    loss_MNN += torch.sum(Sim * z_dist) / torch.sum(Sim)
+                    Sim_tensors.append((Sim, z_dist))  # Keep for backward pass, cleanup later
 
-            # geometric structure loss
-            loss_Geo = 0
-            for i in range(num_datasets):
-                loss_Geo += - torch.clamp(cos(K_dict[i], K_z_dict[i]), max=0.975).mean()
+                optimizer_G.zero_grad()
+                loss_G = self.lambdaGAN * loss_G_GAN + self.lambdaAE * loss_AE + self.lambdaLA * loss_LA + self.lambdaMNN * loss_MNN + self.lambdaGeo*loss_Geo
+                
+                # ✅ GPU memory monitoring before backward pass (critical OOM point)
+                if step == 0 and torch.cuda.is_available() and device is not None:
+                    print_gpu_memory("Step 0 (before backward) ", device=device)
+                    print_cpu_memory("Step 0 (before backward) ")
+                
+                loss_G.backward()
+                torch.nn.utils.clip_grad_norm_(params_G, 5.0)
+                optimizer_G.step()
+                
+                # ✅ Cleanup MNN tensors after backward pass
+                for Sim, z_dist in Sim_tensors:
+                    del Sim, z_dist
+                del Sim_tensors
+                
+                # ✅ GPU memory monitoring after backward pass
+                if step == 0 and torch.cuda.is_available() and device is not None:
+                    print_gpu_memory("Step 0 (after backward) ", device=device, print_peak=True)
+                    print("-" * 70)
 
-            # MNN loss
-            loss_MNN = 0
-            Sim_tensors = []  # Store for cleanup after backward
-            for i in range(num_datasets-1):
-                # ✅ acquire_pairs creates numpy array on CPU - convert to torch immediately
-                Sim_np = acquire_pairs(x_MNN_dict_0[i], x_MNN_dict_1[i], k=self.n_KNN)
-                Sim = torch.from_numpy(Sim_np).float().to(self.device)
-                del Sim_np  # Immediately delete numpy array to free CPU memory
-                z_dist = torch.mean((z_dict[i].view(self.batch_size, 1, -1) - z_dict[i+1].view(1, self.batch_size, -1))**2, dim=2)
-                loss_MNN += torch.sum(Sim * z_dist) / torch.sum(Sim)
-                Sim_tensors.append((Sim, z_dist))  # Keep for backward pass, cleanup later
+                # ✅ VERBOSE: Monitor every 10 steps for first 100 steps to catch kill point
+                if step % 10 == 0 and step < 100 and step > 0:
+                    if torch.cuda.is_available() and device is not None:
+                        print_gpu_memory(f"Step {step} ", device=device)
+                    print_cpu_memory(f"Step {step} ")
+                    print(f"  loss_D={loss_D:.4f}, loss_AE={self.lambdaAE*loss_AE:.2f}, loss_MNN={self.lambdaMNN*loss_MNN:.2f}")
 
-            optimizer_G.zero_grad()
-            loss_G = self.lambdaGAN * loss_G_GAN + self.lambdaAE * loss_AE + self.lambdaLA * loss_LA + self.lambdaMNN * loss_MNN + self.lambdaGeo*loss_Geo
-            
-            # ✅ GPU memory monitoring before backward pass (critical OOM point)
-            if step == 0 and torch.cuda.is_available() and device is not None:
-                print_gpu_memory("Step 0 (before backward) ", device=device)
-                print_cpu_memory("Step 0 (before backward) ")
-            
-            loss_G.backward()
-            torch.nn.utils.clip_grad_norm_(params_G, 5.0)
-            optimizer_G.step()
-            
-            # ✅ Cleanup MNN tensors after backward pass
-            for Sim, z_dist in Sim_tensors:
-                del Sim, z_dist
-            del Sim_tensors
-            
-            # ✅ GPU memory monitoring after backward pass
-            if step == 0 and torch.cuda.is_available() and device is not None:
-                print_gpu_memory("Step 0 (after backward) ", device=device, print_peak=True)
-                print("-" * 70)
-
-            if not step % 2000:
-                print("step %d, loss_D=%f, loss_GAN=%f, loss_AE=%f, loss_Geo=%f, loss_LA=%f, loss_MNN=%f"
-                 % (step, loss_D, loss_G_GAN, self.lambdaAE*loss_AE, self.lambdaGeo*loss_Geo, self.lambdaLA*loss_LA, self.lambdaMNN*loss_MNN))
+                if not step % 2000:
+                    print("step %d, loss_D=%f, loss_GAN=%f, loss_AE=%f, loss_Geo=%f, loss_LA=%f, loss_MNN=%f"
+                     % (step, loss_D, loss_G_GAN, self.lambdaAE*loss_AE, self.lambdaGeo*loss_Geo, self.lambdaLA*loss_LA, self.lambdaMNN*loss_MNN))
+                    if torch.cuda.is_available() and device is not None:
+                        print_gpu_memory(f"Step {step} ", device=device, print_peak=True)
+                    print_cpu_memory(f"Step {step} ")
+        
+        except Exception as e:
+            print("\n" + "="*70)
+            print("EXCEPTION CAUGHT DURING TRAINING!")
+            print("="*70)
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            if torch.cuda.is_available() and device is not None:
+                print_gpu_memory("At exception ", device=device, print_peak=True)
+            print_cpu_memory("At exception ")
+            print("="*70)
+            raise
 
         end_time = time.time()
         print("Ending time: ", time.asctime(time.localtime(end_time)))

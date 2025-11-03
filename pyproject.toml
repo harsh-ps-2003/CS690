@@ -27,7 +27,9 @@ dependencies = [
   "numba>=0.56.0",
   "matplotlib>=3.7,<3.11",
   "scikit-learn>=1.3.0",
+  "scikit-misc>=0.1.4",
   "annoy>=1.17.1",
+  "commot>=0.1.0",
   "psutil>=5.9.0",  # Memory monitoring
   # imaging and other dependencies
   "pillow>=10.3.0",

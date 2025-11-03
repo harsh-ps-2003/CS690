@@ -5,26 +5,40 @@ import pandas as pd
 import anndata as ad
 import umap
 from .model import *
-from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
 import gc
 
 def acquire_pairs(X, Y, k=30, metric='angular'):
     # This function was modified from iMAP: https://github.com/Svvord/iMAP/blob/master/imap/stage2.py
-    # ✅ CRITICAL FIX: Replaced Annoy with sklearn to prevent thread leaks
-    # Annoy's build() spawns worker threads that never die, accumulating to 1024+ and causing SIGKILL
-    # sklearn's NearestNeighbors doesn't spawn persistent threads, solving the issue
+    # ✅ CRITICAL FIX: Pure NumPy implementation - ZERO thread creation
+    # Replaced Annoy/sklearn to prevent thread leaks that accumulate to 1024+ and cause SIGKILL
+    # Pure NumPy operations respect OMP_NUM_THREADS=1 and create no persistent threads
     
-    # Convert 'angular' metric to sklearn equivalent ('cosine' for angular distance)
-    sklearn_metric = 'cosine' if metric == 'angular' else metric
+    # Convert to numpy arrays if needed
+    X = np.asarray(X)
+    Y = np.asarray(Y)
     
-    # Find k nearest neighbors of X in Y
-    nn1 = NearestNeighbors(n_neighbors=k, metric=sklearn_metric, n_jobs=1).fit(Y)
-    idx_Y = nn1.kneighbors(X, return_distance=False)
+    if metric == 'angular':
+        # Angular distance via cosine similarity (pure NumPy, respects OMP_NUM_THREADS=1)
+        # Normalize vectors
+        X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
+        Y_norm = Y / (np.linalg.norm(Y, axis=1, keepdims=True) + 1e-8)
+        # Cosine similarity matrix (batch_size x batch_size)
+        sim = X_norm @ Y_norm.T  # Matrix multiply (uses BLAS with OMP_NUM_THREADS=1)
+        # For angular, higher similarity = closer (negate for distance-like)
+        dist_matrix = -sim
+    else:
+        # Euclidean distance (pure NumPy)
+        # dist_matrix[i,j] = ||X[i] - Y[j]||^2
+        XX = np.sum(X**2, axis=1, keepdims=True)  # (len(X), 1)
+        YY = np.sum(Y**2, axis=1, keepdims=True)  # (len(Y), 1)
+        XY = X @ Y.T  # (len(X), len(Y))
+        dist_matrix = XX + YY.T - 2 * XY
     
-    # Find k nearest neighbors of Y in X
-    nn2 = NearestNeighbors(n_neighbors=k, metric=sklearn_metric, n_jobs=1).fit(X)
-    idx_X = nn2.kneighbors(Y, return_distance=False)
+    # Find k nearest neighbors: argpartition is O(n) and thread-safe
+    # Get top-k indices for each row
+    idx_Y = np.argpartition(dist_matrix, k-1, axis=1)[:, :k]  # Top-k of X in Y
+    idx_X = np.argpartition(dist_matrix.T, k-1, axis=1)[:, :k]  # Top-k of Y in X
     
     # Build mutual nearest neighbors matrix
     mnn_mat = np.zeros((len(X), len(Y)), dtype=bool)
@@ -33,8 +47,10 @@ def acquire_pairs(X, Y, k=30, metric='angular'):
     for j, nbrs in enumerate(idx_X):
         mnn_mat[nbrs, j] &= True  # Keep only mutual neighbors
     
-    # Cleanup
-    del nn1, nn2, idx_Y, idx_X
+    # Cleanup (don't delete X, Y as they're input parameters)
+    del dist_matrix, idx_Y, idx_X
+    if metric == 'angular':
+        del X_norm, Y_norm, sim
     
     return mnn_mat.astype(int)
      

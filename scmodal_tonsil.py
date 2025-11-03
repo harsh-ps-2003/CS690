@@ -2,8 +2,11 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import anndata as ad
+import scipy.sparse as sparse
 import commot as ct
 import os
+import gc
+import psutil
 
 import scMODAL.scmodal as scmodal
 print(scmodal.__version__)
@@ -11,9 +14,27 @@ print(scmodal.__version__)
 import warnings
 warnings.filterwarnings("ignore")
 
+def print_memory_usage(prefix=""):
+    """Print current CPU memory usage"""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    mem_gb = mem_info.rss / 1e9  # GB
+    percent = process.memory_percent()
+    virtual = psutil.virtual_memory()
+    system_available = virtual.available / 1e9
+    print(f"{prefix}CPU Memory: {mem_gb:.2f} GB ({percent:.1f}%), System Available: {system_available:.1f}GB")
+    return mem_gb
+
+print_memory_usage("Initial ")
+
 adata_CODEX = ad.read_h5ad('/data1/cs690_env/adata_codex.h5ad')
+print_memory_usage("After loading CODEX ")
+
 adata_RNA = ad.read_h5ad('/data1/cs690_env/adata_rna.h5ad')
+print_memory_usage("After loading RNA ")
+
 adata_ATAC = ad.read_h5ad('/data1/cs690_env/adata_atac.h5ad')
+print_memory_usage("After loading ATAC ")
 
 correspondence = pd.read_csv('/data1/cs690_env/protein_gene_conversion.csv', )
 correspondence['Protein name'] = correspondence['Protein name'].replace(to_replace={'CD11a-CD18': 'CD11a/CD18', 'CD66a-c-e': 'CD66a/c/e'})
@@ -44,7 +65,17 @@ print(df_cellchat.shape)
 
 adata_RNA_unshared = adata_RNA[:, sorted(set(adata_RNA.var.index) - set(rna_protein_correspondence[:, 0]))].copy()
 adata_RNA_lr = adata_RNA_unshared[:, adata_RNA_unshared.var.index.isin(np.unique(df_cellchat['0'].values)) | adata_RNA_unshared.var.index.isin(np.unique(df_cellchat['1'].values))].copy()
-adata_RNA_lr_variable = adata_RNA_lr[:, (np.sum(adata_RNA_lr.X.toarray(), axis=0) > 10)].var.index
+
+# ✅ CRITICAL FIX: Use sparse-safe sum instead of .toarray() to avoid massive memory consumption
+if sparse.issparse(adata_RNA_lr.X):
+    # Sparse matrix: sum along axis 0 without converting to dense
+    gene_sums = np.array(adata_RNA_lr.X.sum(axis=0)).flatten()
+else:
+    gene_sums = np.sum(adata_RNA_lr.X, axis=0)
+
+adata_RNA_lr_variable = adata_RNA_lr[:, (gene_sums > 10)].var.index
+del gene_sums  # Cleanup
+print_memory_usage("After LR filtering ")
 
 sc.pp.highly_variable_genes(adata_RNA_unshared, flavor='seurat_v3', n_top_genes=1000)
 adata_RNA_unshared = adata_RNA_unshared[:, adata_RNA_unshared.var.highly_variable | adata_RNA_unshared.var.index.isin(adata_RNA_lr_variable)].copy()
@@ -73,7 +104,13 @@ adata_ATAC_unshared = adata_ATAC[:, sorted(set(adata_ATAC.var.index) - set(atac_
 sc.pp.highly_variable_genes(adata_ATAC_unshared, flavor='seurat_v3', n_top_genes=1000)
 adata_ATAC_unshared = adata_ATAC_unshared[:, adata_ATAC_unshared.var.highly_variable].copy()
 
-sc.pp.normalize_total(adata_RNA_shared, target_sum=np.median((np.exp(adata_CODEX_shared.X)-1).sum(axis=1)))
+# ✅ Sparse-safe computation for target_sum
+if sparse.issparse(adata_CODEX_shared.X):
+    target_sum_rna = np.median(np.array((np.exp(adata_CODEX_shared.X.toarray())-1).sum(axis=1)).flatten())
+else:
+    target_sum_rna = np.median((np.exp(adata_CODEX_shared.X)-1).sum(axis=1))
+
+sc.pp.normalize_total(adata_RNA_shared, target_sum=target_sum_rna)
 sc.pp.log1p(adata_RNA_shared)
 
 sc.pp.normalize_total(adata_RNA_unshared)
@@ -82,13 +119,26 @@ sc.pp.log1p(adata_RNA_unshared)
 adata_RNA = ad.concat([adata_RNA_shared, adata_RNA_unshared], axis=1)
 adata_RNA.obs["celltype"] = adata_RNA_shared.obs["celltype"]
 
+# ✅ Save shared feature count before cleanup (needed for model training)
+n_rna_codex_shared = adata_RNA_shared.shape[1]
+print(f"Number of RNA-CODEX shared features: {n_rna_codex_shared}")
+
 adata_CODEX = adata_CODEX_shared # CODEX data do not contain unlinked features with RNA data
 adata_CODEX.obs["celltype"] = adata_CODEX.obs["celltype"]
 
+print_memory_usage("Before scaling ")
+
 sc.pp.scale(adata_RNA, max_value=10)
 sc.pp.scale(adata_CODEX, max_value=10)
+print_memory_usage("After scaling RNA/CODEX ")
 
-sc.pp.normalize_total(adata_ATAC_shared, target_sum=np.median((np.exp(adata_CODEX_ATAC_shared.X)-1).sum(axis=1)))
+# ✅ Sparse-safe computation for target_sum
+if sparse.issparse(adata_CODEX_ATAC_shared.X):
+    target_sum_atac = np.median(np.array((np.exp(adata_CODEX_ATAC_shared.X.toarray())-1).sum(axis=1)).flatten())
+else:
+    target_sum_atac = np.median((np.exp(adata_CODEX_ATAC_shared.X)-1).sum(axis=1))
+
+sc.pp.normalize_total(adata_ATAC_shared, target_sum=target_sum_atac)
 sc.pp.log1p(adata_ATAC_shared)
 
 sc.pp.normalize_total(adata_ATAC_unshared)
@@ -109,10 +159,23 @@ adata_RNA.obs['modality'] = 'RNA'
 adata_ATAC.obs['modality'] = 'ATAC'
 adata_RNA_ATAC_shared = ad.concat([adata_RNA[:, RNA_ATAC_shared], adata_ATAC[:, RNA_ATAC_shared]])
 sc.tl.pca(adata_RNA_ATAC_shared, n_comps=30)
+print_memory_usage("After PCA ")
+
+# ✅ CRITICAL: Cleanup intermediate objects before training to free RAM
+print("\n" + "="*70)
+print("CLEANING UP INTERMEDIATE OBJECTS BEFORE TRAINING")
+print("="*70)
+del adata_RNA_shared, adata_RNA_unshared, adata_RNA_lr, adata_RNA_lr_variable
+del adata_CODEX_shared, adata_ATAC_shared, adata_ATAC_unshared
+del adata_CODEX_ATAC_shared, atac_protein_correspondence
+del rna_protein_correspondence, correspondence, df_cellchat
+gc.collect()
+print_memory_usage("After cleanup before training ")
+print("="*70 + "\n")
 
 model = scmodal.model.Model(training_steps=10000, lambdaMNN=5, lambdaGAN=0.5, model_path="./tonsil_tutorial")
 model.integrate_datasets_feats(input_feats=[adata_CODEX.X, adata_RNA.X, adata_ATAC.X],
-                              paired_input_MNN=[[adata_CODEX.X[:, :adata_RNA_shared.shape[1]], adata_RNA.X[:, :adata_RNA_shared.shape[1]]],
+                              paired_input_MNN=[[adata_CODEX.X[:, :n_rna_codex_shared], adata_RNA.X[:, :n_rna_codex_shared]],
                                                 [adata_RNA_ATAC_shared.obsm['X_pca'][:adata_RNA.shape[0]], adata_RNA_ATAC_shared.obsm['X_pca'][adata_RNA.shape[0]:]], ])
 
 adata_integrated = ad.AnnData(X=model.latent)

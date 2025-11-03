@@ -2,6 +2,7 @@ import os
 import time
 import gc
 import numpy as np
+import scipy.sparse as sparse
 import scanpy as sc
 import pandas as pd
 import torch
@@ -526,7 +527,13 @@ class Model(object):
                 x_MNN_dict = {}
             for i in range(num_datasets):
                 index_i = np.random.choice(np.arange(input_feats[i].shape[0]), size=self.batch_size)
-                x_dict[i] = torch.from_numpy(input_feats[i][index_i, :]).float().to(self.device)
+                
+                # ✅ Handle sparse matrices properly
+                batch_data = input_feats[i][index_i, :]
+                if sparse.issparse(batch_data):
+                    batch_data = batch_data.toarray()
+                x_dict[i] = torch.from_numpy(batch_data).float().to(self.device)
+                
                 if input_MNN != None:
                     assert input_MNN[i].shape[0] == input_feats[i].shape[0]
                     x_MNN_dict[i] = input_MNN[i][index_i, :]
@@ -597,7 +604,11 @@ class Model(object):
 
         for i in range(num_datasets):
             self.E_dict[i].train()
-            z_dict[i] = self.E_dict[i](torch.from_numpy(input_feats[i]).float().to(self.device))
+            # ✅ Handle sparse matrices in evaluation
+            feat_data = input_feats[i]
+            if sparse.issparse(feat_data):
+                feat_data = feat_data.toarray()
+            z_dict[i] = self.E_dict[i](torch.from_numpy(feat_data).float().to(self.device))
 
         print("Ending time: ", time.asctime(time.localtime(end_time)))
         self.eval_time = end_time - begin_time
@@ -647,7 +658,13 @@ class Model(object):
             x_MNN_dict_1 = {}
             for i in range(num_datasets):
                 index_i = np.random.choice(np.arange(input_feats[i].shape[0]), size=self.batch_size)
-                x_dict[i] = torch.from_numpy(input_feats[i][index_i, :]).float().to(self.device)
+                
+                # ✅ Handle sparse matrices properly
+                batch_data = input_feats[i][index_i, :]
+                if sparse.issparse(batch_data):
+                    batch_data = batch_data.toarray()
+                x_dict[i] = torch.from_numpy(batch_data).float().to(self.device)
+                
                 if i < (num_datasets-1):
                     x_MNN_dict_0[i] = paired_input_MNN[i][0][index_i, :]
                 if i > 0:
@@ -714,7 +731,11 @@ class Model(object):
 
         for i in range(num_datasets):
             self.E_dict[i].train()
-            z_dict[i] = self.E_dict[i](torch.from_numpy(input_feats[i]).float().to(self.device))
+            # ✅ Handle sparse matrices in evaluation
+            feat_data = input_feats[i]
+            if sparse.issparse(feat_data):
+                feat_data = feat_data.toarray()
+            z_dict[i] = self.E_dict[i](torch.from_numpy(feat_data).float().to(self.device))
 
         print("Ending time: ", time.asctime(time.localtime(end_time)))
         self.eval_time = end_time - begin_time

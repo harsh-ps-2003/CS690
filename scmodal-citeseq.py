@@ -25,21 +25,25 @@ print_memory_usage("Initial ")
 
 adata_RNA = sc.read_h5ad('/data1/cs690_env/multi.h5ad')
 print_memory_usage("After loading RNA h5ad ")
-# Prevent Scanpy from auto-densifying later
-adata_RNA.X = adata_RNA.X if sc.sparse.issparse(adata_RNA.X) else sc.sparse.csr_matrix(adata_RNA.X)
+
+# ✅ Ensure adata_RNA.X stays sparse to prevent densification later
+if not sparse.issparse(adata_RNA.X):
+    adata_RNA.X = sparse.csr_matrix(adata_RNA.X)
+
 adata_RNA.var.index = adata_RNA.var['_index']
 
-# Keep data sparse to avoid massive memory consumption
-# Only convert to dense if already dense, otherwise keep sparse
-# Keep sparse matrix — do NOT convert to dense
+# ✅ Keep sparse matrix — do NOT convert to dense (saves huge RAM)
 if hasattr(adata_RNA, "raw") and adata_RNA.raw is not None:
-    if sc.sparse.issparse(adata_RNA.raw.X):
+    if sparse.issparse(adata_RNA.raw.X):
         print("✅ Keeping adata_RNA.raw.X as sparse (saves huge memory).")
         adata_RNA.X = adata_RNA.raw.X  # just reference it
     else:
-        adata_RNA.X = adata_RNA.raw.X.copy()
+        print("⚠️ adata_RNA.raw.X is dense; converting to sparse CSR matrix.")
+        adata_RNA.X = sparse.csr_matrix(adata_RNA.raw.X)
 else:
     print("⚠️ No raw layer found; using adata_RNA.X as is.")
+    if not sparse.issparse(adata_RNA.X):
+        adata_RNA.X = sparse.csr_matrix(adata_RNA.X)
 
 counts_ADT = pd.read_csv('/data1/cs690_env/ADT.csv').T
 adata_ADT = ad.AnnData(X = counts_ADT.values)

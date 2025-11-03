@@ -647,7 +647,20 @@ class Model(object):
         for i in range(num_datasets-1):
             self.D_dict[i].train()
 
+        # ✅ GPU memory monitoring setup
+        device = None
+        if torch.cuda.is_available():
+            device = self.device if isinstance(self.device, int) else torch.cuda.current_device()
+            torch.cuda.reset_peak_memory_stats(device)
+            print_gpu_memory("Before training loop ", device=device)
+            print_cpu_memory("Before training loop ")
+            print("-" * 70)
+
         for step in range(self.training_steps):
+            # ✅ GPU memory monitoring at step 0 to catch OOM early
+            if step == 0 and torch.cuda.is_available() and device is not None:
+                print_gpu_memory("Step 0 (before forward) ", device=device)
+            
             cos = nn.CosineSimilarity(dim=1, eps=1e-6)
             x_dict = {}
             z_dict = {}
@@ -705,17 +718,37 @@ class Model(object):
 
             # MNN loss
             loss_MNN = 0
+            Sim_tensors = []  # Store for cleanup after backward
             for i in range(num_datasets-1):
-                Sim = acquire_pairs(x_MNN_dict_0[i], x_MNN_dict_1[i], k=self.n_KNN)
-                Sim = torch.from_numpy(Sim).float().to(self.device)
+                # ✅ acquire_pairs creates numpy array on CPU - convert to torch immediately
+                Sim_np = acquire_pairs(x_MNN_dict_0[i], x_MNN_dict_1[i], k=self.n_KNN)
+                Sim = torch.from_numpy(Sim_np).float().to(self.device)
+                del Sim_np  # Immediately delete numpy array to free CPU memory
                 z_dist = torch.mean((z_dict[i].view(self.batch_size, 1, -1) - z_dict[i+1].view(1, self.batch_size, -1))**2, dim=2)
                 loss_MNN += torch.sum(Sim * z_dist) / torch.sum(Sim)
+                Sim_tensors.append((Sim, z_dist))  # Keep for backward pass, cleanup later
 
             optimizer_G.zero_grad()
             loss_G = self.lambdaGAN * loss_G_GAN + self.lambdaAE * loss_AE + self.lambdaLA * loss_LA + self.lambdaMNN * loss_MNN + self.lambdaGeo*loss_Geo
+            
+            # ✅ GPU memory monitoring before backward pass (critical OOM point)
+            if step == 0 and torch.cuda.is_available() and device is not None:
+                print_gpu_memory("Step 0 (before backward) ", device=device)
+                print_cpu_memory("Step 0 (before backward) ")
+            
             loss_G.backward()
             torch.nn.utils.clip_grad_norm_(params_G, 5.0)
             optimizer_G.step()
+            
+            # ✅ Cleanup MNN tensors after backward pass
+            for Sim, z_dist in Sim_tensors:
+                del Sim, z_dist
+            del Sim_tensors
+            
+            # ✅ GPU memory monitoring after backward pass
+            if step == 0 and torch.cuda.is_available() and device is not None:
+                print_gpu_memory("Step 0 (after backward) ", device=device, print_peak=True)
+                print("-" * 70)
 
             if not step % 2000:
                 print("step %d, loss_D=%f, loss_GAN=%f, loss_AE=%f, loss_Geo=%f, loss_LA=%f, loss_MNN=%f"

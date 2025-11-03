@@ -173,10 +173,31 @@ gc.collect()
 print_memory_usage("After cleanup before training ")
 print("="*70 + "\n")
 
-model = scmodal.model.Model(training_steps=10000, lambdaMNN=5, lambdaGAN=0.5, model_path="./tonsil_tutorial")
+# ✅ CRITICAL FIX: Convert paired_input_MNN to dense ONCE before training to avoid repeated conversions
+print("Preparing paired_input_MNN matrices (converting sparse to dense if needed)...")
+codex_rna_shared = adata_CODEX.X[:, :n_rna_codex_shared]
+rna_shared = adata_RNA.X[:, :n_rna_codex_shared]
+
+if sparse.issparse(codex_rna_shared):
+    print(f"  Converting CODEX-RNA shared features to dense: {codex_rna_shared.shape} (sparse) -> dense")
+    codex_rna_shared = codex_rna_shared.toarray()
+if sparse.issparse(rna_shared):
+    print(f"  Converting RNA shared features to dense: {rna_shared.shape} (sparse) -> dense")
+    rna_shared = rna_shared.toarray()
+
+pca_rna = adata_RNA_ATAC_shared.obsm['X_pca'][:adata_RNA.shape[0]]
+pca_atac = adata_RNA_ATAC_shared.obsm['X_pca'][adata_RNA.shape[0]:]
+
+print_memory_usage("After preparing MNN pairs ")
+
+# ✅ CRITICAL FIX: Reduce batch_size from default 500 to 128 to avoid GPU OOM
+# With 3 datasets and pairwise matrices (O(batch²)), batch_size=500 can exceed 40GB VRAM
+model = scmodal.model.Model(batch_size=128, training_steps=10000, lambdaMNN=5, lambdaGAN=0.5, model_path="./tonsil_tutorial")
+print(f"Model initialized with batch_size=128 (reduced from default 500 to fit in 40GB VRAM)")
+
 model.integrate_datasets_feats(input_feats=[adata_CODEX.X, adata_RNA.X, adata_ATAC.X],
-                              paired_input_MNN=[[adata_CODEX.X[:, :n_rna_codex_shared], adata_RNA.X[:, :n_rna_codex_shared]],
-                                                [adata_RNA_ATAC_shared.obsm['X_pca'][:adata_RNA.shape[0]], adata_RNA_ATAC_shared.obsm['X_pca'][adata_RNA.shape[0]:]], ])
+                              paired_input_MNN=[[codex_rna_shared, rna_shared],
+                                                [pca_rna, pca_atac]], )
 
 adata_integrated = ad.AnnData(X=model.latent)
 adata_integrated.obs['modality'] = ['CODEX'] * adata_CODEX.shape[0] + ['RNA'] * adata_RNA.shape[0] + ['ATAC'] * adata_ATAC.shape[0]

@@ -10,15 +10,16 @@ import psutil
 import multiprocessing as mp
 
 # ✅ CRITICAL FIX: Limit threads to prevent hitting 1024 thread limit (per-process kernel limit)
-# PyTorch/NumPy/OpenBLAS create many threads; without limits, can exceed 1024 and get SIGKILL
-os.environ["OMP_NUM_THREADS"] = "4"       # OpenMP / MKL threads
-os.environ["MKL_NUM_THREADS"] = "4"       # MKL threads
-os.environ["NUMEXPR_NUM_THREADS"] = "4"   # NumExpr threads
-os.environ["OPENBLAS_NUM_THREADS"] = "4"  # OpenBLAS threads
+# PyTorch/NumPy/OpenBLAS/Annoy create many threads; without limits, can exceed 1024 and get SIGKILL
+# Setting all to 1 ensures each library reuses the same single thread, keeping total threads ~70
+os.environ["OMP_NUM_THREADS"] = "1"       # OpenMP / MKL threads (Annoy uses this!)
+os.environ["MKL_NUM_THREADS"] = "1"       # MKL threads
+os.environ["NUMEXPR_NUM_THREADS"] = "1"   # NumExpr threads
+os.environ["OPENBLAS_NUM_THREADS"] = "1"  # OpenBLAS threads
 
 import torch
-torch.set_num_threads(4)                  # PyTorch intra-op parallelism
-torch.set_num_interop_threads(1)         # PyTorch inter-op parallelism
+torch.set_num_threads(1)                  # PyTorch intra-op parallelism
+torch.set_num_interop_threads(1)          # PyTorch inter-op parallelism
 
 # Set multiprocessing to reuse threads (fork) instead of spawning new processes
 try:
@@ -27,8 +28,10 @@ except RuntimeError:
     # Already set, ignore
     pass
 
-print("🔒 Thread caps set: OMP/MKL/NumExpr/OpenBLAS/torch = 4 | torch inter-op = 1")
+print("🔒 Thread caps set: OMP/MKL/NumExpr/OpenBLAS/torch = 1 | torch inter-op = 1")
 print("   This prevents hitting the 1024 thread limit that causes SIGKILL")
+print("   Each AnnoyIndex.build() will reuse the same single OpenMP thread")
+print("   Total threads should stay ~70 (well below 1024 limit)")
 print("")
 
 import scMODAL.scmodal as scmodal

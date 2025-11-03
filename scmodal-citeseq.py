@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import anndata as ad
+import scipy.sparse as sparse
 import scMODAL.scmodal as scmodal
 print(scmodal.__version__)
 print(dir(scmodal.model))
@@ -24,18 +25,21 @@ print_memory_usage("Initial ")
 
 adata_RNA = sc.read_h5ad('/data1/cs690_env/multi.h5ad')
 print_memory_usage("After loading RNA h5ad ")
+# Prevent Scanpy from auto-densifying later
+adata_RNA.X = adata_RNA.X if sc.sparse.issparse(adata_RNA.X) else sc.sparse.csr_matrix(adata_RNA.X)
 adata_RNA.var.index = adata_RNA.var['_index']
 
 # Keep data sparse to avoid massive memory consumption
 # Only convert to dense if already dense, otherwise keep sparse
-if hasattr(adata_RNA.raw.X, 'toarray'):
-    print("⚠️  WARNING: adata_RNA.raw.X is sparse. Converting to dense will consume massive RAM.")
-    print(f"   Matrix shape: {adata_RNA.raw.X.shape}, estimated dense size: {adata_RNA.raw.X.shape[0] * adata_RNA.raw.X.shape[1] * 8 / 1e9:.2f} GB")
-    # Convert to dense (this is the memory killer)
-    adata_RNA.X = adata_RNA.raw.X.toarray()
-    print_memory_usage("After sparse->dense conversion ")
+# Keep sparse matrix — do NOT convert to dense
+if hasattr(adata_RNA, "raw") and adata_RNA.raw is not None:
+    if sc.sparse.issparse(adata_RNA.raw.X):
+        print("✅ Keeping adata_RNA.raw.X as sparse (saves huge memory).")
+        adata_RNA.X = adata_RNA.raw.X  # just reference it
+    else:
+        adata_RNA.X = adata_RNA.raw.X.copy()
 else:
-    adata_RNA.X = adata_RNA.raw.X
+    print("⚠️ No raw layer found; using adata_RNA.X as is.")
 
 counts_ADT = pd.read_csv('/data1/cs690_env/ADT.csv').T
 adata_ADT = ad.AnnData(X = counts_ADT.values)

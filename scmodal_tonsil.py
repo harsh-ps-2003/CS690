@@ -190,10 +190,11 @@ pca_atac = adata_RNA_ATAC_shared.obsm['X_pca'][adata_RNA.shape[0]:]
 
 print_memory_usage("After preparing MNN pairs ")
 
-# ✅ CRITICAL FIX: Reduce batch_size from default 500 to 128 to avoid GPU OOM
-# With 3 datasets and pairwise matrices (O(batch²)), batch_size=500 can exceed 40GB VRAM
-model = scmodal.model.Model(batch_size=128, training_steps=10000, lambdaMNN=5, lambdaGAN=0.5, model_path="./tonsil_tutorial")
-print(f"Model initialized with batch_size=128 (reduced from default 500 to fit in 40GB VRAM)")
+# ✅ CRITICAL FIX: Reduce batch_size to fit in memory limit
+# batch_size=128 uses ~1.5GB, batch_size=64 uses ~1.2GB
+# If hitting 2GB cgroup/session limit, use batch_size=64
+model = scmodal.model.Model(batch_size=64, training_steps=10000, lambdaMNN=5, lambdaGAN=0.5, model_path="./tonsil_tutorial")
+print(f"Model initialized with batch_size=64 (reduced to fit in 2GB memory limit)")
 
 model.integrate_datasets_feats(input_feats=[adata_CODEX.X, adata_RNA.X, adata_ATAC.X],
                               paired_input_MNN=[[codex_rna_shared, rna_shared],

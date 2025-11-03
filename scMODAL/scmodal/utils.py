@@ -4,7 +4,6 @@ import scanpy as sc
 import pandas as pd
 import anndata as ad
 import umap
-from annoy import AnnoyIndex
 from .model import *
 from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import cdist
@@ -12,44 +11,32 @@ import gc
 
 def acquire_pairs(X, Y, k=30, metric='angular'):
     # This function was modified from iMAP: https://github.com/Svvord/iMAP/blob/master/imap/stage2.py
-    # ⚠️ MEMORY FIX: Explicitly cleanup intermediate arrays
-    f = X.shape[1]
-    t1 = AnnoyIndex(f, metric)
-    t2 = AnnoyIndex(f, metric)
-    for i in range(len(X)):
-        t1.add_item(i, X[i])
-    for i in range(len(Y)):
-        t2.add_item(i, Y[i])
-    t1.build(10)
-    t2.build(10)
-
-    mnn_mat = np.bool_(np.zeros((len(X), len(Y))))
-    sorted_mat = np.array([t2.get_nns_by_vector(item, k) for item in X])
-    for i in range(len(sorted_mat)):
-        mnn_mat[i,sorted_mat[i]] = True
+    # ✅ CRITICAL FIX: Replaced Annoy with sklearn to prevent thread leaks
+    # Annoy's build() spawns worker threads that never die, accumulating to 1024+ and causing SIGKILL
+    # sklearn's NearestNeighbors doesn't spawn persistent threads, solving the issue
     
-    # ✅ Delete sorted_mat before creating next array
-    del sorted_mat
+    # Convert 'angular' metric to sklearn equivalent ('cosine' for angular distance)
+    sklearn_metric = 'cosine' if metric == 'angular' else metric
     
-    _ = np.bool_(np.zeros((len(X), len(Y))))
-    sorted_mat = np.array([t1.get_nns_by_vector(item, k) for item in Y])
-    for i in range(len(sorted_mat)):
-        _[sorted_mat[i],i] = True
+    # Find k nearest neighbors of X in Y
+    nn1 = NearestNeighbors(n_neighbors=k, metric=sklearn_metric, n_jobs=1).fit(Y)
+    idx_Y = nn1.kneighbors(X, return_distance=False)
     
-    # ✅ Cleanup before final operation
-    del sorted_mat
+    # Find k nearest neighbors of Y in X
+    nn2 = NearestNeighbors(n_neighbors=k, metric=sklearn_metric, n_jobs=1).fit(X)
+    idx_X = nn2.kneighbors(Y, return_distance=False)
     
-    mnn_mat = np.logical_and(_, mnn_mat).astype(int)
+    # Build mutual nearest neighbors matrix
+    mnn_mat = np.zeros((len(X), len(Y)), dtype=bool)
+    for i, nbrs in enumerate(idx_Y):
+        mnn_mat[i, nbrs] = True
+    for j, nbrs in enumerate(idx_X):
+        mnn_mat[nbrs, j] &= True  # Keep only mutual neighbors
     
-    # ✅ Delete temporary matrices
-    del _
+    # Cleanup
+    del nn1, nn2, idx_Y, idx_X
     
-    # ✅ Explicitly unload Annoy indices (they hold memory)
-    t1.unload()
-    t2.unload()
-    del t1, t2
-    
-    return mnn_mat
+    return mnn_mat.astype(int)
      
 def annotate_by_nn(vec_tar, vec_ref, label_ref, k=20, metric='cosine'):
     dist_mtx = cdist(vec_tar, vec_ref, metric=metric)

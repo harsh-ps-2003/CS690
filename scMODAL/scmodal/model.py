@@ -22,6 +22,15 @@ except ImportError:
     print("psutil not available. Install with: pip install psutil")
 
 
+def thread_count():
+    """Return number of live threads in this process."""
+    try:
+        return len(os.listdir("/proc/self/task"))
+    except (FileNotFoundError, OSError):  # macOS / non-proc systems
+        import threading
+        return threading.active_count()
+
+
 def get_cpu_memory_stats():
     """Get current CPU memory statistics"""
     if not PSUTIL_AVAILABLE:
@@ -659,8 +668,9 @@ class Model(object):
         try:
             for step in range(self.training_steps):
                 # ✅ VERBOSE: Monitor every 10 steps to catch where kill happens
-                if step % 10 == 0 and step < 100:
+                if step % 10 == 0 and step < 120:  # Extended to 120 steps to catch thread leak
                     print(f"→ Starting step {step}...")
+                    print(f"🧵 step {step}: threads = {thread_count()}")
                 
                 # ✅ GPU memory monitoring at step 0 to catch OOM early
                 if step == 0 and torch.cuda.is_available() and device is not None:

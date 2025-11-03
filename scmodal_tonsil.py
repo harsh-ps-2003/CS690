@@ -16,6 +16,7 @@ os.environ["OMP_NUM_THREADS"] = "1"       # OpenMP / MKL threads (Annoy uses thi
 os.environ["MKL_NUM_THREADS"] = "1"       # MKL threads
 os.environ["NUMEXPR_NUM_THREADS"] = "1"   # NumExpr threads
 os.environ["OPENBLAS_NUM_THREADS"] = "1"  # OpenBLAS threads
+os.environ["OPENBLAS_MAIN_FREE"] = "1"    # Keep OpenBLAS worker thread alive (prevents respawn leak)
 
 import torch
 torch.set_num_threads(1)                  # PyTorch intra-op parallelism
@@ -29,9 +30,9 @@ except RuntimeError:
     pass
 
 print("🔒 Thread caps set: OMP/MKL/NumExpr/OpenBLAS/torch = 1 | torch inter-op = 1")
+print("   OPENBLAS_MAIN_FREE=1 prevents OpenBLAS from respawning worker threads")
 print("   This prevents hitting the 1024 thread limit that causes SIGKILL")
-print("   Each AnnoyIndex.build() will reuse the same single OpenMP thread")
-print("   Total threads should stay ~70 (well below 1024 limit)")
+print("   Total threads should stay ~70-100 (well below 1024 limit)")
 print("")
 
 import scMODAL.scmodal as scmodal

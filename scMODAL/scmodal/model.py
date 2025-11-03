@@ -145,8 +145,8 @@ class Model(object):
         self.adata_B = adata_B_input.copy()
 
         self.shared_gene_num = shared_gene_num
-        self.emb_A = self.adata_A.X
-        self.emb_B = self.adata_B.X
+        self.emb_A = self.adata_A.X.toarray() if sparse.issparse(self.adata_A.X) else self.adata_A.X
+        self.emb_B = self.adata_B.X.toarray() if sparse.issparse(self.adata_B.X) else self.adata_B.X
 
     def preprocess_additional_inputs(self, 
                    adata_A_input, 

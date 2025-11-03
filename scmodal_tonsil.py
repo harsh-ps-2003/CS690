@@ -7,6 +7,29 @@ import commot as ct
 import os
 import gc
 import psutil
+import multiprocessing as mp
+
+# ✅ CRITICAL FIX: Limit threads to prevent hitting 1024 thread limit (per-process kernel limit)
+# PyTorch/NumPy/OpenBLAS create many threads; without limits, can exceed 1024 and get SIGKILL
+os.environ["OMP_NUM_THREADS"] = "4"       # OpenMP / MKL threads
+os.environ["MKL_NUM_THREADS"] = "4"       # MKL threads
+os.environ["NUMEXPR_NUM_THREADS"] = "4"   # NumExpr threads
+os.environ["OPENBLAS_NUM_THREADS"] = "4"  # OpenBLAS threads
+
+import torch
+torch.set_num_threads(4)                  # PyTorch intra-op parallelism
+torch.set_num_interop_threads(1)         # PyTorch inter-op parallelism
+
+# Set multiprocessing to reuse threads (fork) instead of spawning new processes
+try:
+    mp.set_start_method("fork", force=True)
+except RuntimeError:
+    # Already set, ignore
+    pass
+
+print("🔒 Thread caps set: OMP/MKL/NumExpr/OpenBLAS/torch = 4 | torch inter-op = 1")
+print("   This prevents hitting the 1024 thread limit that causes SIGKILL")
+print("")
 
 import scMODAL.scmodal as scmodal
 print(scmodal.__version__)

@@ -91,15 +91,28 @@ def print_memory_usage(prefix=""):
     print(f"{prefix}CPU Memory: {mem_gb:.2f} GB ({percent:.1f}%), System Available: {system_available:.1f}GB")
     return mem_gb
 
+def _to_float32_matrix(mat):
+    """Ensure dense or sparse matrix is float32 without densifying."""
+    import numpy as np, scipy.sparse as sp
+    if sp.issparse(mat):
+        if mat.dtype != np.float32:
+            mat.data = mat.data.astype(np.float32)
+        return mat
+    else:
+        return mat.astype(np.float32, copy=False)
+
 print_memory_usage("Initial ")
 
 adata_CODEX = ad.read_h5ad('/data1/cs690_env/adata_codex.h5ad')
+adata_CODEX.X = _to_float32_matrix(adata_CODEX.X)
 print_memory_usage("After loading CODEX ")
 
 adata_RNA = ad.read_h5ad('/data1/cs690_env/adata_rna.h5ad')
+adata_RNA.X = _to_float32_matrix(adata_RNA.X)
 print_memory_usage("After loading RNA ")
 
 adata_ATAC = ad.read_h5ad('/data1/cs690_env/adata_atac.h5ad')
+adata_ATAC.X = _to_float32_matrix(adata_ATAC.X)
 print_memory_usage("After loading ATAC ")
 
 correspondence = pd.read_csv('/data1/cs690_env/protein_gene_conversion.csv', )

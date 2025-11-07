@@ -755,29 +755,98 @@ class Model(object):
                 torch.nn.utils.clip_grad_norm_(params_G, 5.0)
                 optimizer_G.step()
                 
-                # ✅ Cleanup MNN tensors after backward pass
-                for Sim, z_dist in Sim_tensors:
-                    del Sim, z_dist
-                del Sim_tensors
+                # ✅ CRITICAL: Log before deleting tensors (so loss variables still exist)
+                # Store loss values as Python floats for logging after cleanup
+                loss_D_val = float(loss_D.item() if hasattr(loss_D, 'item') else loss_D)
+                loss_G_GAN_val = float(loss_G_GAN.item() if hasattr(loss_G_GAN, 'item') else loss_G_GAN)
+                loss_AE_val = float(loss_AE.item() if hasattr(loss_AE, 'item') else loss_AE)
+                loss_Geo_val = float(loss_Geo.item() if hasattr(loss_Geo, 'item') else loss_Geo)
+                loss_LA_val = float(loss_LA.item() if hasattr(loss_LA, 'item') else loss_LA)
+                loss_MNN_val = float(loss_MNN.item() if hasattr(loss_MNN, 'item') else loss_MNN)
                 
-                # ✅ GPU memory monitoring after backward pass
-                if step == 0 and torch.cuda.is_available() and device is not None:
-                    print_gpu_memory("Step 0 (after backward) ", device=device, print_peak=True)
-                    print("-" * 70)
-
+                if not step % 2000:
+                    print("step %d, loss_D=%f, loss_GAN=%f, loss_AE=%f, loss_Geo=%f, loss_LA=%f, loss_MNN=%f"
+                     % (step, loss_D_val, loss_G_GAN_val, self.lambdaAE*loss_AE_val, self.lambdaGeo*loss_Geo_val, self.lambdaLA*loss_LA_val, self.lambdaMNN*loss_MNN_val))
+                    if torch.cuda.is_available() and device is not None:
+                        print_gpu_memory(f"Step {step} ", device=device, print_peak=True)
+                    print_cpu_memory(f"Step {step} ")
+                
                 # ✅ VERBOSE: Monitor every 10 steps for first 100 steps to catch kill point
                 if step % 10 == 0 and step < 100 and step > 0:
                     if torch.cuda.is_available() and device is not None:
                         print_gpu_memory(f"Step {step} ", device=device)
                     print_cpu_memory(f"Step {step} ")
-                    print(f"  loss_D={loss_D:.4f}, loss_AE={self.lambdaAE*loss_AE:.2f}, loss_MNN={self.lambdaMNN*loss_MNN:.2f}")
-
-                if not step % 2000:
-                    print("step %d, loss_D=%f, loss_GAN=%f, loss_AE=%f, loss_Geo=%f, loss_LA=%f, loss_MNN=%f"
-                     % (step, loss_D, loss_G_GAN, self.lambdaAE*loss_AE, self.lambdaGeo*loss_Geo, self.lambdaLA*loss_LA, self.lambdaMNN*loss_MNN))
-                    if torch.cuda.is_available() and device is not None:
-                        print_gpu_memory(f"Step {step} ", device=device, print_peak=True)
-                    print_cpu_memory(f"Step {step} ")
+                    print(f"  loss_D={loss_D_val:.4f}, loss_AE={self.lambdaAE*loss_AE_val:.2f}, loss_MNN={self.lambdaMNN*loss_MNN_val:.2f}")
+                
+                # ✅ CRITICAL: Aggressive cleanup after backward pass to prevent memory accumulation
+                # Delete all intermediate tensors that accumulate over steps
+                for Sim, z_dist in Sim_tensors:
+                    del Sim, z_dist
+                del Sim_tensors
+                
+                # Delete pairwise distance matrices (memory-intensive)
+                for i in range(num_datasets):
+                    if i in K_dict:
+                        del K_dict[i]
+                    if i in K_z_dict:
+                        del K_z_dict[i]
+                del K_dict, K_z_dict
+                
+                # Delete input/output tensors
+                for i in range(num_datasets):
+                    if i in x_dict:
+                        del x_dict[i]
+                    if i in z_dict:
+                        del z_dict[i]
+                del x_dict, z_dict
+                
+                # Delete MNN input dictionaries
+                for i in range(num_datasets-1):
+                    if i in x_MNN_dict_0:
+                        del x_MNN_dict_0[i]
+                    if i in x_MNN_dict_1:
+                        del x_MNN_dict_1[i]
+                del x_MNN_dict_0, x_MNN_dict_1
+                
+                # Delete loss tensors
+                del loss_G, loss_AE, loss_LA, loss_G_GAN, loss_Geo, loss_MNN
+                
+                # ✅ GPU memory monitoring after backward pass
+                if step == 0 and torch.cuda.is_available() and device is not None:
+                    print_gpu_memory("Step 0 (after backward) ", device=device, print_peak=True)
+                    print("-" * 70)
+                
+                # ✅ Periodic cleanup to prevent gradual memory leaks
+                if step % 25 == 0 and step > 0:
+                    # Light cleanup - just CUDA cache
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                if step % 100 == 0 and step > 0:
+                    # Aggressive cleanup - both CPU and GPU
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                
+                # ✅ Monitor CPU memory growth to catch OOM before it happens
+                if step % 500 == 0 and step > 0:
+                    current_cpu_memory = get_cpu_memory_stats()
+                    if current_cpu_memory:
+                        if hasattr(self, "_prev_cpu_memory_feats"):
+                            cpu_growth = current_cpu_memory["process_memory_gb"] - self._prev_cpu_memory_feats["process_memory_gb"]
+                            if cpu_growth > 0.5:  # If process grew by more than 0.5GB
+                                print(f"Step {step}: ⚠️ CPU memory growth +{cpu_growth:.2f}GB since last check")
+                                print(f"    Process using {current_cpu_memory['process_memory_gb']:.2f}GB, forcing GC...")
+                                gc.collect()
+                        self._prev_cpu_memory_feats = current_cpu_memory.copy()
+                        
+                        # Emergency cleanup if system RAM is low
+                        if current_cpu_memory['system_available_gb'] < 3.0:
+                            print(f"⚠️ CRITICAL: System RAM low ({current_cpu_memory['system_available_gb']:.2f}GB available)!")
+                            print("    Forcing emergency cleanup...")
+                            gc.collect()
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
         
         except Exception as e:
             print("\n" + "="*70)

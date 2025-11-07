@@ -13,6 +13,23 @@ import torch.optim as optim
 from .networks import *
 from .utils import *
 
+# ✅ CRITICAL FIX: malloc_trim to return freed memory to OS and reduce VMS
+# glibc's malloc keeps freed memory in arenas, never returning it to OS
+# This causes VMS to stay high even when RSS is low, triggering OOM kills
+try:
+    import ctypes
+    _libc = ctypes.CDLL("libc.so.6")
+    def malloc_trim():
+        """Return freed memory to OS to reduce VMS"""
+        try:
+            _libc.malloc_trim(0)
+        except Exception:
+            pass  # Silently fail if not available
+except Exception:
+    # Fallback if ctypes/CDLL not available (e.g., macOS)
+    def malloc_trim():
+        pass
+
 # Add CPU memory monitoring
 try:
     import psutil
@@ -361,6 +378,7 @@ class Model(object):
                     print(f"WARNING: System RAM running low! Available: {cpu_stats['system_available_gb']:.2f}GB")
                     print("    Forcing aggressive garbage collection...")
                     gc.collect()
+                    malloc_trim()  # Return memory to OS
                 print("-" * 70)
             
             # ✅ Immediately free memory after printing
@@ -414,6 +432,7 @@ class Model(object):
                         gc.collect()
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
+                        malloc_trim()  # Return memory to OS
             
             # ✅ Extra cleanup every few steps - INCREASE FREQUENCY
             if step % 25 == 0 and step > 0:
@@ -426,6 +445,8 @@ class Model(object):
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     torch.cuda.synchronize()
+                # ✅ CRITICAL: Return freed memory to OS to reduce VMS
+                malloc_trim()
         end_time = time.time()
         print("Ending time: ", time.asctime(time.localtime(end_time)))
         self.train_time = end_time - begin_time
@@ -926,16 +947,19 @@ class Model(object):
                     if verbose_zone:
                         cpu_before_gc = get_cpu_memory_stats()
                         if cpu_before_gc:
-                            print(f"🧹 Aggressive cleanup at step {step}: RSS={cpu_before_gc['rss_gb']:.3f}GB")
+                            print(f"🧹 Aggressive cleanup at step {step}: RSS={cpu_before_gc['rss_gb']:.3f}GB, VMS={cpu_before_gc['vms_gb']:.3f}GB")
                     gc.collect()
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                         torch.cuda.synchronize()
+                    # ✅ CRITICAL: Return freed memory to OS to reduce VMS
+                    malloc_trim()
                     if verbose_zone:
                         cpu_after_gc = get_cpu_memory_stats()
                         if cpu_after_gc and cpu_before_gc:
-                            delta = cpu_after_gc['rss_gb'] - cpu_before_gc['rss_gb']
-                            print(f"   After GC: RSS={cpu_after_gc['rss_gb']:.3f}GB (Δ{delta:+.3f}GB)")
+                            rss_delta = cpu_after_gc['rss_gb'] - cpu_before_gc['rss_gb']
+                            vms_delta = cpu_after_gc['vms_gb'] - cpu_before_gc['vms_gb']
+                            print(f"   After GC+trim: RSS={cpu_after_gc['rss_gb']:.3f}GB (Δ{rss_delta:+.3f}GB), VMS={cpu_after_gc['vms_gb']:.3f}GB (Δ{vms_delta:+.3f}GB)")
                 
                 # ✅ Monitor CPU memory growth to catch OOM before it happens
                 if step % 500 == 0 and step > 0:
@@ -956,6 +980,7 @@ class Model(object):
                             gc.collect()
                             if torch.cuda.is_available():
                                 torch.cuda.empty_cache()
+                            malloc_trim()  # Return memory to OS
                 
                 # ✅ Check for time-based limits (common in job schedulers)
                 if step % 1000 == 0 and step > 0:

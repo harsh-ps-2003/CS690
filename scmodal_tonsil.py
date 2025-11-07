@@ -280,6 +280,15 @@ del adata_CODEX_shared, adata_ATAC_shared, adata_ATAC_unshared
 del adata_CODEX_ATAC_shared, atac_protein_correspondence
 del rna_protein_correspondence, correspondence, df_cellchat
 gc.collect()
+
+# ✅ CRITICAL: Return freed memory to OS to reduce VMS before training
+try:
+    import ctypes
+    _libc = ctypes.CDLL("libc.so.6")
+    _libc.malloc_trim(0)
+except Exception:
+    pass  # Silently fail if not available
+
 print_memory_usage("After cleanup before training ")
 print("="*70 + "\n")
 

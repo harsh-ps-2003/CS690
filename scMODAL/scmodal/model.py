@@ -46,12 +46,20 @@ def get_cpu_memory_stats():
     system_total = virtual.total / 1e9
     system_available = virtual.available / 1e9
     
+    # Get detailed memory info
+    mem_full = process.memory_full_info() if hasattr(process, 'memory_full_info') else None
+    
     return {
         'process_memory_gb': mem_gb,
         'process_percent': percent,
         'system_total_gb': system_total,
         'system_available_gb': system_available,
-        'system_used_percent': virtual.percent
+        'system_used_percent': virtual.percent,
+        'rss_gb': mem_info.rss / 1e9,
+        'vms_gb': mem_info.vms / 1e9,
+        'shared_gb': mem_info.shared / 1e9 if hasattr(mem_info, 'shared') else 0,
+        'num_fds': process.num_fds() if hasattr(process, 'num_fds') else None,
+        'num_threads': process.num_threads() if hasattr(process, 'num_threads') else None,
     }
 
 
@@ -667,10 +675,27 @@ class Model(object):
 
         try:
             for step in range(self.training_steps):
-                # ✅ VERBOSE: Monitor every 10 steps to catch where kill happens
-                if step % 10 == 0 and step < 120:  # Extended to 120 steps to catch thread leak
+                # ✅ VERBOSE: Monitor every step near kill point (1900-2010) and every 10 steps otherwise
+                verbose_zone = (step >= 1990 and step <= 2010) or (step % 10 == 0 and step < 120)
+                
+                if verbose_zone:
+                    print(f"\n{'='*70}")
                     print(f"→ Starting step {step}...")
                     print(f"🧵 step {step}: threads = {thread_count()}")
+                    cpu_stats = get_cpu_memory_stats()
+                    if cpu_stats:
+                        print(f"📊 Memory BEFORE step {step}:")
+                        print(f"   RSS: {cpu_stats['rss_gb']:.3f}GB | VMS: {cpu_stats['vms_gb']:.3f}GB | Shared: {cpu_stats['shared_gb']:.3f}GB")
+                        print(f"   Process: {cpu_stats['process_memory_gb']:.3f}GB ({cpu_stats['process_percent']:.1f}%)")
+                        print(f"   System Available: {cpu_stats['system_available_gb']:.1f}GB")
+                        if cpu_stats['num_fds'] is not None:
+                            print(f"   File descriptors: {cpu_stats['num_fds']}")
+                        if cpu_stats['num_threads'] is not None:
+                            print(f"   Threads: {cpu_stats['num_threads']}")
+                        if hasattr(self, "_prev_cpu_memory_feats") and self._prev_cpu_memory_feats:
+                            delta = cpu_stats['rss_gb'] - self._prev_cpu_memory_feats.get('rss_gb', 0)
+                            if abs(delta) > 0.01:
+                                print(f"   ΔRSS since last check: {delta:+.3f}GB")
                 
                 # ✅ GPU memory monitoring at step 0 to catch OOM early
                 if step == 0 and torch.cuda.is_available() and device is not None:
@@ -700,6 +725,12 @@ class Model(object):
                     z_dict[i] = self.E_dict[i](x_dict[i])
                     K_dict[i] = torch.exp(-torch.mean((x_dict[i].view(self.batch_size, 1, -1) - x_dict[i].view(1, self.batch_size, -1))**2, dim=2)/2)
                     K_z_dict[i] = torch.exp(-torch.mean((z_dict[i].view(self.batch_size, 1, -1) - z_dict[i].view(1, self.batch_size, -1))**2, dim=2)/2)
+                
+                # ✅ VERBOSE: Memory after forward pass
+                if verbose_zone:
+                    cpu_stats = get_cpu_memory_stats()
+                    if cpu_stats:
+                        print(f"📊 Memory AFTER forward pass (step {step}): RSS={cpu_stats['rss_gb']:.3f}GB")
 
                 # discriminator loss:
                 for _ in range(5):
@@ -742,6 +773,12 @@ class Model(object):
                     z_dist = torch.mean((z_dict[i].view(self.batch_size, 1, -1) - z_dict[i+1].view(1, self.batch_size, -1))**2, dim=2)
                     loss_MNN += torch.sum(Sim * z_dist) / torch.sum(Sim)
                     Sim_tensors.append((Sim, z_dist))  # Keep for backward pass, cleanup later
+                
+                # ✅ VERBOSE: Memory after MNN computation
+                if verbose_zone:
+                    cpu_stats = get_cpu_memory_stats()
+                    if cpu_stats:
+                        print(f"📊 Memory AFTER MNN computation (step {step}): RSS={cpu_stats['rss_gb']:.3f}GB")
 
                 optimizer_G.zero_grad()
                 loss_G = self.lambdaGAN * loss_G_GAN + self.lambdaAE * loss_AE + self.lambdaLA * loss_LA + self.lambdaMNN * loss_MNN + self.lambdaGeo*loss_Geo
@@ -751,9 +788,21 @@ class Model(object):
                     print_gpu_memory("Step 0 (before backward) ", device=device)
                     print_cpu_memory("Step 0 (before backward) ")
                 
+                # ✅ VERBOSE: Memory before backward (critical point)
+                if verbose_zone:
+                    cpu_stats = get_cpu_memory_stats()
+                    if cpu_stats:
+                        print(f"📊 Memory BEFORE backward (step {step}): RSS={cpu_stats['rss_gb']:.3f}GB")
+                
                 loss_G.backward()
                 torch.nn.utils.clip_grad_norm_(params_G, 5.0)
                 optimizer_G.step()
+                
+                # ✅ VERBOSE: Memory after backward
+                if verbose_zone:
+                    cpu_stats = get_cpu_memory_stats()
+                    if cpu_stats:
+                        print(f"📊 Memory AFTER backward (step {step}): RSS={cpu_stats['rss_gb']:.3f}GB")
                 
                 # ✅ CRITICAL: Log before deleting tensors (so loss variables still exist)
                 # Store loss values as Python floats for logging after cleanup
@@ -780,6 +829,11 @@ class Model(object):
                 
                 # ✅ CRITICAL: Aggressive cleanup after backward pass to prevent memory accumulation
                 # Delete all intermediate tensors that accumulate over steps
+                if verbose_zone:
+                    cpu_before_cleanup = get_cpu_memory_stats()
+                    if cpu_before_cleanup:
+                        print(f"📊 Memory BEFORE cleanup (step {step}): RSS={cpu_before_cleanup['rss_gb']:.3f}GB")
+                
                 for Sim, z_dist in Sim_tensors:
                     del Sim, z_dist
                 del Sim_tensors
@@ -811,6 +865,22 @@ class Model(object):
                 # Delete loss tensors
                 del loss_G, loss_AE, loss_LA, loss_G_GAN, loss_Geo, loss_MNN
                 
+                # ✅ VERBOSE: Memory after cleanup
+                if verbose_zone:
+                    cpu_after_cleanup = get_cpu_memory_stats()
+                    if cpu_after_cleanup and cpu_before_cleanup:
+                        delta = cpu_after_cleanup['rss_gb'] - cpu_before_cleanup['rss_gb']
+                        print(f"📊 Memory AFTER cleanup (step {step}): RSS={cpu_after_cleanup['rss_gb']:.3f}GB (Δ{delta:+.3f}GB)")
+                    # Store for next step delta calculation
+                    if cpu_after_cleanup:
+                        self._prev_cpu_memory_feats = cpu_after_cleanup.copy()
+                    print(f"{'='*70}\n")
+                else:
+                    # Still store memory state even if not verbose for delta tracking
+                    cpu_after_cleanup = get_cpu_memory_stats()
+                    if cpu_after_cleanup:
+                        self._prev_cpu_memory_feats = cpu_after_cleanup.copy()
+                
                 # ✅ GPU memory monitoring after backward pass
                 if step == 0 and torch.cuda.is_available() and device is not None:
                     print_gpu_memory("Step 0 (after backward) ", device=device, print_peak=True)
@@ -821,12 +891,23 @@ class Model(object):
                     # Light cleanup - just CUDA cache
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                    if verbose_zone:
+                        print(f"🧹 Light cleanup at step {step} (CUDA cache)")
                 if step % 100 == 0 and step > 0:
                     # Aggressive cleanup - both CPU and GPU
+                    if verbose_zone:
+                        cpu_before_gc = get_cpu_memory_stats()
+                        if cpu_before_gc:
+                            print(f"🧹 Aggressive cleanup at step {step}: RSS={cpu_before_gc['rss_gb']:.3f}GB")
                     gc.collect()
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                         torch.cuda.synchronize()
+                    if verbose_zone:
+                        cpu_after_gc = get_cpu_memory_stats()
+                        if cpu_after_gc and cpu_before_gc:
+                            delta = cpu_after_gc['rss_gb'] - cpu_before_gc['rss_gb']
+                            print(f"   After GC: RSS={cpu_after_gc['rss_gb']:.3f}GB (Δ{delta:+.3f}GB)")
                 
                 # ✅ Monitor CPU memory growth to catch OOM before it happens
                 if step % 500 == 0 and step > 0:

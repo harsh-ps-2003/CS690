@@ -163,8 +163,15 @@ class Model(object):
         self.adata_B = adata_B_input.copy()
 
         self.shared_gene_num = shared_gene_num
-        self.emb_A = self.adata_A.X.toarray() if sparse.issparse(self.adata_A.X) else self.adata_A.X
-        self.emb_B = self.adata_B.X.toarray() if sparse.issparse(self.adata_B.X) else self.adata_B.X
+        # ✅ Convert to float32 to reduce VMS (half the size of float64)
+        if sparse.issparse(self.adata_A.X):
+            self.emb_A = self.adata_A.X.astype(np.float32).toarray()
+        else:
+            self.emb_A = self.adata_A.X.astype(np.float32)
+        if sparse.issparse(self.adata_B.X):
+            self.emb_B = self.adata_B.X.astype(np.float32).toarray()
+        else:
+            self.emb_B = self.adata_B.X.astype(np.float32)
 
     def preprocess_additional_inputs(self, 
                    adata_A_input, 
@@ -545,10 +552,13 @@ class Model(object):
             for i in range(num_datasets):
                 index_i = np.random.choice(np.arange(input_feats[i].shape[0]), size=self.batch_size)
                 
-                # ✅ Handle sparse matrices properly
+                # ✅ Handle sparse matrices properly - convert to float32 to reduce VMS
                 batch_data = input_feats[i][index_i, :]
                 if sparse.issparse(batch_data):
-                    batch_data = batch_data.toarray()
+                    batch_data = batch_data.astype(np.float32).toarray()
+                else:
+                    # Ensure float32 even if already dense
+                    batch_data = batch_data.astype(np.float32)
                 x_dict[i] = torch.from_numpy(batch_data).float().to(self.device)
                 
                 if input_MNN != None:
@@ -621,10 +631,13 @@ class Model(object):
 
         for i in range(num_datasets):
             self.E_dict[i].train()
-            # ✅ Handle sparse matrices in evaluation
+            # ✅ Handle sparse matrices in evaluation - convert to float32 to reduce VMS
             feat_data = input_feats[i]
             if sparse.issparse(feat_data):
-                feat_data = feat_data.toarray()
+                feat_data = feat_data.astype(np.float32).toarray()
+            else:
+                # Ensure float32 even if already dense
+                feat_data = feat_data.astype(np.float32)
             z_dict[i] = self.E_dict[i](torch.from_numpy(feat_data).float().to(self.device))
 
         print("Ending time: ", time.asctime(time.localtime(end_time)))
@@ -724,10 +737,13 @@ class Model(object):
                 for i in range(num_datasets):
                     index_i = np.random.choice(np.arange(input_feats[i].shape[0]), size=self.batch_size)
                     
-                    # ✅ Handle sparse matrices properly
+                    # ✅ Handle sparse matrices properly - convert to float32 to reduce VMS
                     batch_data = input_feats[i][index_i, :]
                     if sparse.issparse(batch_data):
-                        batch_data = batch_data.toarray()
+                        batch_data = batch_data.astype(np.float32).toarray()
+                    else:
+                        # Ensure float32 even if already dense
+                        batch_data = batch_data.astype(np.float32)
                     x_dict[i] = torch.from_numpy(batch_data).float().to(self.device)
                     
                     if i < (num_datasets-1):
@@ -978,10 +994,13 @@ class Model(object):
 
         for i in range(num_datasets):
             self.E_dict[i].train()
-            # ✅ Handle sparse matrices in evaluation
+            # ✅ Handle sparse matrices in evaluation - convert to float32 to reduce VMS
             feat_data = input_feats[i]
             if sparse.issparse(feat_data):
-                feat_data = feat_data.toarray()
+                feat_data = feat_data.astype(np.float32).toarray()
+            else:
+                # Ensure float32 even if already dense
+                feat_data = feat_data.astype(np.float32)
             z_dict[i] = self.E_dict[i](torch.from_numpy(feat_data).float().to(self.device))
 
         print("Ending time: ", time.asctime(time.localtime(end_time)))

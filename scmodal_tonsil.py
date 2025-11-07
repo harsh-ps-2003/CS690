@@ -181,11 +181,19 @@ sc.pp.highly_variable_genes(adata_ATAC_unshared, flavor='seurat_v3', n_top_genes
 adata_ATAC_unshared = adata_ATAC_unshared[:, adata_ATAC_unshared.var.highly_variable].copy()
 gc.collect()  # Free memory after copy to reduce VMS
 
-# ✅ Sparse-safe computation for target_sum
+# ✅ CRITICAL FIX: Compute target_sum without creating huge dense float64 arrays (reduces VMS)
+# Use sparse-safe computation with float32 to avoid 6-7GB temporary allocations
 if sparse.issparse(adata_CODEX_shared.X):
-    target_sum_rna = np.median(np.array((np.exp(adata_CODEX_shared.X.toarray())-1).sum(axis=1)).flatten())
+    # Compute exp-1 and sum per row without converting entire matrix to dense
+    # This avoids creating a 6-7GB float64 dense matrix
+    exp_data = np.exp(adata_CODEX_shared.X.data.astype(np.float32)) - 1.0
+    row_sums = np.add.reduceat(exp_data, adata_CODEX_shared.X.indptr[:-1])
+    target_sum_rna = float(np.median(row_sums))
+    del exp_data, row_sums  # Free immediately
+    gc.collect()
 else:
-    target_sum_rna = np.median((np.exp(adata_CODEX_shared.X)-1).sum(axis=1))
+    # Dense case: use float32 to reduce memory
+    target_sum_rna = float(np.median((np.exp(adata_CODEX_shared.X.astype(np.float32)) - 1.0).sum(axis=1)))
 
 sc.pp.normalize_total(adata_RNA_shared, target_sum=target_sum_rna)
 sc.pp.log1p(adata_RNA_shared)
@@ -210,11 +218,19 @@ sc.pp.scale(adata_RNA, max_value=10)
 sc.pp.scale(adata_CODEX, max_value=10)
 print_memory_usage("After scaling RNA/CODEX ")
 
-# ✅ Sparse-safe computation for target_sum
+# ✅ CRITICAL FIX: Compute target_sum without creating huge dense float64 arrays (reduces VMS)
+# Use sparse-safe computation with float32 to avoid 6-7GB temporary allocations
 if sparse.issparse(adata_CODEX_ATAC_shared.X):
-    target_sum_atac = np.median(np.array((np.exp(adata_CODEX_ATAC_shared.X.toarray())-1).sum(axis=1)).flatten())
+    # Compute exp-1 and sum per row without converting entire matrix to dense
+    # This avoids creating a 6-7GB float64 dense matrix
+    exp_data = np.exp(adata_CODEX_ATAC_shared.X.data.astype(np.float32)) - 1.0
+    row_sums = np.add.reduceat(exp_data, adata_CODEX_ATAC_shared.X.indptr[:-1])
+    target_sum_atac = float(np.median(row_sums))
+    del exp_data, row_sums  # Free immediately
+    gc.collect()
 else:
-    target_sum_atac = np.median((np.exp(adata_CODEX_ATAC_shared.X)-1).sum(axis=1))
+    # Dense case: use float32 to reduce memory
+    target_sum_atac = float(np.median((np.exp(adata_CODEX_ATAC_shared.X.astype(np.float32)) - 1.0).sum(axis=1)))
 
 sc.pp.normalize_total(adata_ATAC_shared, target_sum=target_sum_atac)
 sc.pp.log1p(adata_ATAC_shared)
@@ -259,13 +275,14 @@ print("Preparing paired_input_MNN matrices (converting sparse to dense if needed
 codex_rna_shared = adata_CODEX.X[:, :n_rna_codex_shared]
 rna_shared = adata_RNA.X[:, :n_rna_codex_shared]
 
+# ✅ CRITICAL FIX: Convert to float32 dense arrays (half the size of float64, reduces VMS)
 if sparse.issparse(codex_rna_shared):
-    print(f"  Converting CODEX-RNA shared features to dense: {codex_rna_shared.shape} (sparse) -> dense")
-    codex_rna_shared = codex_rna_shared.toarray()
+    print(f"  Converting CODEX-RNA shared features to dense float32: {codex_rna_shared.shape} (sparse) -> dense")
+    codex_rna_shared = codex_rna_shared.astype(np.float32).toarray()
     gc.collect()  # Free sparse matrix memory immediately
 if sparse.issparse(rna_shared):
-    print(f"  Converting RNA shared features to dense: {rna_shared.shape} (sparse) -> dense")
-    rna_shared = rna_shared.toarray()
+    print(f"  Converting RNA shared features to dense float32: {rna_shared.shape} (sparse) -> dense")
+    rna_shared = rna_shared.astype(np.float32).toarray()
     gc.collect()  # Free sparse matrix memory immediately
 
 # ✅ CRITICAL: Copy PCA data and delete large object to reduce VMS

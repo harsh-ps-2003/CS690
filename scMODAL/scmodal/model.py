@@ -674,13 +674,21 @@ class Model(object):
             print("-" * 70)
 
         try:
+            import time as time_module
+            training_start_time = time_module.time()
+            
             for step in range(self.training_steps):
-                # ✅ VERBOSE: Monitor every step near kill point (1900-2010) and every 10 steps otherwise
-                verbose_zone = (step >= 1990 and step <= 2010) or (step % 10 == 0 and step < 120)
+                # ✅ VERBOSE: Monitor every step near kill point (1900-2020) and every 10 steps otherwise
+                verbose_zone = (step >= 1990 and step <= 2020) or (step % 10 == 0 and step < 120)
+                
+                # Track elapsed time
+                elapsed_time = time_module.time() - training_start_time
+                elapsed_minutes = elapsed_time / 60.0
                 
                 if verbose_zone:
                     print(f"\n{'='*70}")
                     print(f"→ Starting step {step}...")
+                    print(f"⏱️  Elapsed time: {elapsed_minutes:.2f} minutes ({elapsed_time:.1f} seconds)")
                     print(f"🧵 step {step}: threads = {thread_count()}")
                     cpu_stats = get_cpu_memory_stats()
                     if cpu_stats:
@@ -696,6 +704,10 @@ class Model(object):
                             delta = cpu_stats['rss_gb'] - self._prev_cpu_memory_feats.get('rss_gb', 0)
                             if abs(delta) > 0.01:
                                 print(f"   ΔRSS since last check: {delta:+.3f}GB")
+                        
+                        # Check for potential VMS-based OOM (some systems kill on VMS, not RSS)
+                        if cpu_stats['vms_gb'] > 10.0:
+                            print(f"   ⚠️  VMS is {cpu_stats['vms_gb']:.2f}GB - some systems kill on VMS limit!")
                 
                 # ✅ GPU memory monitoring at step 0 to catch OOM early
                 if step == 0 and torch.cuda.is_available() and device is not None:
@@ -928,6 +940,19 @@ class Model(object):
                             gc.collect()
                             if torch.cuda.is_available():
                                 torch.cuda.empty_cache()
+                
+                # ✅ Check for time-based limits (common in job schedulers)
+                if step % 1000 == 0 and step > 0:
+                    elapsed_hours = elapsed_minutes / 60.0
+                    print(f"\n⏱️  Progress check at step {step}: {elapsed_hours:.2f} hours elapsed")
+                    print(f"   Average: {elapsed_time/step:.3f} seconds/step")
+                    print(f"   Estimated remaining: {(self.training_steps - step) * elapsed_time/step / 3600:.2f} hours")
+                    
+                    # Check for common time limits
+                    if elapsed_hours > 20:
+                        print(f"   ⚠️  Running for >20 hours - might hit walltime limit!")
+                    if elapsed_hours > 23:
+                        print(f"   ⚠️  CRITICAL: Running for >23 hours - likely to hit 24h walltime!")
         
         except Exception as e:
             print("\n" + "="*70)

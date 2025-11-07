@@ -8,6 +8,9 @@ import os
 import gc
 import psutil
 import multiprocessing as mp
+import signal
+import sys
+import traceback
 
 # ✅ CRITICAL FIX: Limit threads to prevent hitting 1024 thread limit (per-process kernel limit)
 # PyTorch/NumPy/OpenBLAS/Annoy create many threads; without limits, can exceed 1024 and get SIGKILL
@@ -33,6 +36,42 @@ print("🔒 Thread caps set: OMP/MKL/NumExpr/OpenBLAS/torch = 1 | torch inter-op
 print("   OPENBLAS_MAIN_FREE=1 prevents OpenBLAS from respawning worker threads")
 print("   This prevents hitting the 1024 thread limit that causes SIGKILL")
 print("   Total threads should stay ~70-100 (well below 1024 limit)")
+print("")
+
+# ✅ Signal handler to catch SIGKILL/SIGTERM and log diagnostics
+def signal_handler(signum, frame):
+    """Catch kill signals and print diagnostics before exit"""
+    print("\n" + "="*70)
+    print(f"⚠️  RECEIVED SIGNAL {signum} ({signal.Signals(signum).name})")
+    print("="*70)
+    
+    # Print memory stats
+    try:
+        process = psutil.Process(os.getpid())
+        mem_info = process.memory_info()
+        print(f"Memory at kill time:")
+        print(f"  RSS: {mem_info.rss / 1e9:.3f}GB")
+        print(f"  VMS: {mem_info.vms / 1e9:.3f}GB")
+        print(f"  Threads: {process.num_threads()}")
+        print(f"  File descriptors: {process.num_fds()}")
+        
+        vm = psutil.virtual_memory()
+        print(f"  System available: {vm.available / 1e9:.1f}GB")
+    except Exception as e:
+        print(f"  Could not get memory stats: {e}")
+    
+    # Print stack trace
+    print("\nStack trace at kill time:")
+    traceback.print_stack(frame)
+    
+    print("="*70)
+    sys.exit(128 + signum)
+
+# Register signal handlers (SIGKILL cannot be caught, but SIGTERM can)
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+# Note: SIGKILL (9) cannot be caught, but we'll see if SIGTERM (15) is used
+print("✅ Signal handlers registered (SIGTERM, SIGINT)")
 print("")
 
 import scMODAL.scmodal as scmodal

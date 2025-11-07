@@ -119,8 +119,12 @@ for i in range(correspondence.shape[0]):
 
 rna_protein_correspondence = np.array(rna_protein_correspondence)
 
+# ✅ Use views where possible to reduce VMS (avoid unnecessary copies)
+# Only copy if we need to modify the data structure
 adata_RNA_shared = adata_RNA[:, rna_protein_correspondence[:, 0]].copy()
 adata_CODEX_shared = adata_CODEX[:, rna_protein_correspondence[:, 1]].copy()
+# Force garbage collection after copy to reduce VMS fragmentation
+gc.collect()
 
 adata_RNA_shared.var_names_make_unique()
 adata_CODEX_shared.var_names_make_unique()
@@ -129,8 +133,11 @@ print(df_cellchat.shape)
 
 # Preserve more genes in ligand-receptor database in scRNA-seq data for cell-cell communication inference
 
+# ✅ Reduce VMS: Use views where possible, only copy when necessary
 adata_RNA_unshared = adata_RNA[:, sorted(set(adata_RNA.var.index) - set(rna_protein_correspondence[:, 0]))].copy()
+gc.collect()  # Free memory after copy
 adata_RNA_lr = adata_RNA_unshared[:, adata_RNA_unshared.var.index.isin(np.unique(df_cellchat['0'].values)) | adata_RNA_unshared.var.index.isin(np.unique(df_cellchat['1'].values))].copy()
+gc.collect()  # Free memory after copy
 
 # ✅ CRITICAL FIX: Use sparse-safe sum instead of .toarray() to avoid massive memory consumption
 if sparse.issparse(adata_RNA_lr.X):
@@ -145,6 +152,7 @@ print_memory_usage("After LR filtering ")
 
 sc.pp.highly_variable_genes(adata_RNA_unshared, flavor='seurat_v3', n_top_genes=1000)
 adata_RNA_unshared = adata_RNA_unshared[:, adata_RNA_unshared.var.highly_variable | adata_RNA_unshared.var.index.isin(adata_RNA_lr_variable)].copy()
+gc.collect()  # Free memory after copy to reduce VMS
 # Finding ATAC / CODEX shared features is helpful for normalizing ATAC data
 
 atac_protein_correspondence = []
@@ -163,12 +171,15 @@ for i in range(correspondence.shape[0]):
 atac_protein_correspondence = np.array(atac_protein_correspondence)
 adata_ATAC_shared = adata_ATAC[:, atac_protein_correspondence[:, 0]].copy()
 adata_CODEX_ATAC_shared = adata_CODEX[:, atac_protein_correspondence[:, 1]].copy()
+gc.collect()  # Free memory after copy
 
 adata_ATAC_shared.var_names_make_unique()
 adata_CODEX_ATAC_shared.var_names_make_unique()
 adata_ATAC_unshared = adata_ATAC[:, sorted(set(adata_ATAC.var.index) - set(atac_protein_correspondence[:, 0]))].copy()
+gc.collect()  # Free memory after copy
 sc.pp.highly_variable_genes(adata_ATAC_unshared, flavor='seurat_v3', n_top_genes=1000)
 adata_ATAC_unshared = adata_ATAC_unshared[:, adata_ATAC_unshared.var.highly_variable].copy()
+gc.collect()  # Free memory after copy to reduce VMS
 
 # ✅ Sparse-safe computation for target_sum
 if sparse.issparse(adata_CODEX_shared.X):
@@ -184,6 +195,7 @@ sc.pp.log1p(adata_RNA_unshared)
 
 adata_RNA = ad.concat([adata_RNA_shared, adata_RNA_unshared], axis=1)
 adata_RNA.obs["celltype"] = adata_RNA_shared.obs["celltype"]
+gc.collect()  # Free memory after concat to reduce VMS
 
 # ✅ Save shared feature count before cleanup (needed for model training)
 n_rna_codex_shared = adata_RNA_shared.shape[1]
@@ -213,6 +225,7 @@ sc.pp.log1p(adata_ATAC_unshared)
 adata_ATAC = ad.concat([adata_ATAC_shared, adata_ATAC_unshared], axis=1)
 adata_ATAC.obs["dataset"] = "ATAC"
 adata_ATAC.obs["celltype"] = adata_ATAC_shared.obs["celltype"]
+gc.collect()  # Free memory after concat to reduce VMS
 
 sc.pp.scale(adata_ATAC, max_value=10)
 
@@ -224,7 +237,9 @@ adata_CODEX.obs['modality'] = 'CODEX'
 adata_RNA.obs['modality'] = 'RNA'
 adata_ATAC.obs['modality'] = 'ATAC'
 adata_RNA_ATAC_shared = ad.concat([adata_RNA[:, RNA_ATAC_shared], adata_ATAC[:, RNA_ATAC_shared]])
+gc.collect()  # Free memory after concat
 sc.tl.pca(adata_RNA_ATAC_shared, n_comps=30)
+gc.collect()  # Free memory after PCA to reduce VMS
 print_memory_usage("After PCA ")
 
 # ✅ CRITICAL: Cleanup intermediate objects before training to free RAM
@@ -247,12 +262,19 @@ rna_shared = adata_RNA.X[:, :n_rna_codex_shared]
 if sparse.issparse(codex_rna_shared):
     print(f"  Converting CODEX-RNA shared features to dense: {codex_rna_shared.shape} (sparse) -> dense")
     codex_rna_shared = codex_rna_shared.toarray()
+    gc.collect()  # Free sparse matrix memory immediately
 if sparse.issparse(rna_shared):
     print(f"  Converting RNA shared features to dense: {rna_shared.shape} (sparse) -> dense")
     rna_shared = rna_shared.toarray()
+    gc.collect()  # Free sparse matrix memory immediately
 
-pca_rna = adata_RNA_ATAC_shared.obsm['X_pca'][:adata_RNA.shape[0]]
-pca_atac = adata_RNA_ATAC_shared.obsm['X_pca'][adata_RNA.shape[0]:]
+# ✅ CRITICAL: Copy PCA data and delete large object to reduce VMS
+pca_rna = adata_RNA_ATAC_shared.obsm['X_pca'][:adata_RNA.shape[0]].copy()
+pca_atac = adata_RNA_ATAC_shared.obsm['X_pca'][adata_RNA.shape[0]:].copy()
+
+# ✅ CRITICAL: Delete the large concatenated object to reduce VMS
+del adata_RNA_ATAC_shared
+gc.collect()
 
 print_memory_usage("After preparing MNN pairs ")
 

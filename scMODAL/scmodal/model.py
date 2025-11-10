@@ -423,6 +423,17 @@ class Model(object):
                             gc.collect()
                     self._prev_cpu_memory = current_cpu_memory.copy()
                     
+                    # ✅ NEW: Check VMS growth - this is what triggers the kill!
+                    if current_cpu_memory['vms_gb'] > 10.0:  # VMS over 10GB
+                        print(
+                            f"⚠️ WARNING: VMS is {current_cpu_memory['vms_gb']:.2f}GB - triggering aggressive cleanup!"
+                        )
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        malloc_trim()  # CRITICAL: Return memory to OS to reduce VMS
+                    
                     # Emergency cleanup if system RAM is low
                     if current_cpu_memory['system_available_gb'] < 3.0:
                         print(
@@ -435,10 +446,14 @@ class Model(object):
                         malloc_trim()  # Return memory to OS
             
             # ✅ Extra cleanup every few steps - INCREASE FREQUENCY
+            if step % 10 == 0 and step > 0:
+                # NEW: Ultra-frequent malloc_trim to keep VMS low
+                malloc_trim()
             if step % 25 == 0 and step > 0:
-                # Light cleanup - just CUDA cache
+                # Light cleanup - just CUDA cache + malloc_trim
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                malloc_trim()  # Add here too
             if step % 100 == 0 and step > 0:
                 # Aggressive cleanup - both CPU and GPU
                 gc.collect()
@@ -742,6 +757,10 @@ class Model(object):
                         # Check for potential VMS-based OOM (some systems kill on VMS, not RSS)
                         if cpu_stats['vms_gb'] > 10.0:
                             print(f"   ⚠️  VMS is {cpu_stats['vms_gb']:.2f}GB - some systems kill on VMS limit!")
+                            # ✅ NEW: Immediate VMS reduction
+                            print(f"   🧹 Triggering immediate VMS cleanup...")
+                            gc.collect()
+                            malloc_trim()  # Critical: Return memory to OS
                 
                 # ✅ GPU memory monitoring at step 0 to catch OOM early
                 if step == 0 and torch.cuda.is_available() and device is not None:
@@ -936,10 +955,14 @@ class Model(object):
                     print("-" * 70)
                 
                 # ✅ Periodic cleanup to prevent gradual memory leaks
+                if step % 10 == 0 and step > 0:
+                    # NEW: Ultra-frequent malloc_trim to keep VMS low
+                    malloc_trim()
                 if step % 25 == 0 and step > 0:
-                    # Light cleanup - just CUDA cache
+                    # Light cleanup - CUDA cache + malloc_trim
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                    malloc_trim()  # Add here too
                     if verbose_zone:
                         print(f"🧹 Light cleanup at step {step} (CUDA cache)")
                 if step % 100 == 0 and step > 0:
@@ -972,6 +995,17 @@ class Model(object):
                                 print(f"    Process using {current_cpu_memory['process_memory_gb']:.2f}GB, forcing GC...")
                                 gc.collect()
                         self._prev_cpu_memory_feats = current_cpu_memory.copy()
+                        
+                        # ✅ NEW: Check VMS growth - this is what triggers the kill!
+                        if current_cpu_memory['vms_gb'] > 10.0:  # VMS over 10GB
+                            print(
+                                f"⚠️ WARNING: VMS is {current_cpu_memory['vms_gb']:.2f}GB - triggering aggressive cleanup!"
+                            )
+                            gc.collect()
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                                torch.cuda.synchronize()
+                            malloc_trim()  # CRITICAL: Return memory to OS to reduce VMS
                         
                         # Emergency cleanup if system RAM is low
                         if current_cpu_memory['system_available_gb'] < 3.0:
